@@ -30,6 +30,10 @@ const authMiddleware = requestHandler(async (req, res, next) => {
     throw new ApiError(401, "Session invalid or expired");
   }
 
+  if (session.status === "PENDING_2FA") {
+    throw new ApiError(403, "2FA verification incomplete");
+  }
+
   // 2. SECURITY BINDING CHECKS
   if (session.device_id !== deviceId)
     throw new ApiError(401, "Device mismatch - Security Alert");

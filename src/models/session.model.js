@@ -8,17 +8,17 @@ const sessionSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-
-    // Security fields
     ua_hash: { type: String, required: true },
     device_id: { type: String, required: true },
-
-    // UI Display fields (New)
     ip: { type: String },
     browser: { type: String },
     os: { type: String },
-
     remember: { type: Boolean, default: false },
+    status: { 
+      type: String, 
+      enum: ["PENDING_2FA", "ACTIVE"], 
+      default: "ACTIVE" 
+    },
     last_seen: { type: Date, default: Date.now },
     revoked: { type: Boolean, default: false },
   },
