@@ -31,24 +31,24 @@ const twofaLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
 // Auth Routes
 userRouter.route("/login").post(loginLimiter, loginUser);
 userRouter.route("/create").post(loginLimiter, registerUser);
-userRouter.route("/logout").post(authMiddleware, logoutUser);
-userRouter.route("/profile").get(authMiddleware, getUserProfile);
+userRouter.route("/logout").post(authMiddleware(["user", "admin"]), logoutUser);
+userRouter.route("/profile").get(authMiddleware(["user", "admin"]), getUserProfile);
 
 // 2FA Routes
 userRouter.route("/2fa/verify").post(twofaLimiter, verify2faToken);
-userRouter.route("/2fa/status").get(authMiddleware, status2fa);
-userRouter.route("/2fa/generate").post(authMiddleware, generate2faSecret);
-userRouter.route("/2fa/change").post(authMiddleware, change2faStatus);
+userRouter.route("/2fa/status").get(authMiddleware(["user", "admin"]), status2fa);
+userRouter.route("/2fa/generate").post(authMiddleware(["user", "admin"]), generate2faSecret);
+userRouter.route("/2fa/change").post(authMiddleware(["user", "admin"]), change2faStatus);
 
 // Account Routes
-userRouter.route("/change-name").post(authMiddleware, changeName);
-userRouter.route("/change-pass").post(authMiddleware, changePassword);
+userRouter.route("/change-name").post(authMiddleware(["user", "admin"]), changeName);
+userRouter.route("/change-pass").post(authMiddleware(["user", "admin"]), changePassword);
 
 // 📱 NEW: DEVICE MANAGEMENT ROUTES
-userRouter.route("/sessions").get(authMiddleware, getActiveSessions); // List devices
-userRouter.route("/sessions/revoke").post(authMiddleware, revokeSession); // Logout one
+userRouter.route("/sessions").get(authMiddleware(["user", "admin"]), getActiveSessions); // List devices
+userRouter.route("/sessions/revoke").post(authMiddleware(["user", "admin"]), revokeSession); // Logout one
 userRouter
   .route("/sessions/revoke-all")
-  .post(authMiddleware, revokeOtherSessions); // Logout others
+  .post(authMiddleware(["user", "admin"]), revokeOtherSessions); // Logout others
 
 export default userRouter;
