@@ -9,6 +9,12 @@ const IDLE_NORMAL = process.env.IDLE_NORMAL;
 const IDLE_REMEMBER = process.env.IDLE_REMEMBER;
 const ROTATION_WINDOW = process.env.ROTATION_WINDOW;
 
+
+// Authentication Middleware Usage: 
+// authMiddleware() (no role restriction) 
+// authMiddleware(['admin']) (role restriction example)
+// authMiddleware(['admin', 'user']) (role restriction example)
+
 const authMiddleware = (roles = []) =>
   requestHandler(async (req, res, next) => {
     const sessionId = req.cookies.session_id;
