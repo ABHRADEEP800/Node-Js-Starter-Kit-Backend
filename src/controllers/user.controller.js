@@ -71,6 +71,9 @@ const sanitizeUser = (user) => {
   delete sanitized.passwordResetExpires;
   delete sanitized.failedLoginAttempts;
   delete sanitized.lockUntil;
+  delete sanitized.__v;
+  delete sanitized.createdAt;
+  delete sanitized.updatedAt;
   return sanitized;
 };
 
