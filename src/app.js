@@ -9,7 +9,7 @@ import compression from "compression";
 import mongoSanitize from "express-mongo-sanitize";
 import rateLimit from "express-rate-limit";
 import errorHandler from "./middlewares/error.middleware.js";
-import csrfMiddleware from "./middlewares/csrf.middleware.js";
+import { csrfProtection, generateCsrfToken } from "./middlewares/csrf.middleware.js";
 
 const app = express();
 
@@ -67,7 +67,10 @@ app.use((req, res, next) => {
 
 app.use(express.static("public"));
 app.use(cookieParser());
-app.use(csrfMiddleware);
+app.use(csrfProtection);
+
+// CSRF Token Route
+app.get("/api/v1/csrf-token", generateCsrfToken);
 
 //health check
 app.get("/health", (req, res) => {

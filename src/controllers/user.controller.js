@@ -9,6 +9,7 @@ import crypto from "crypto";
 import { UAParser } from "ua-parser-js";
 import zxcvbn from "zxcvbn";
 import AuditLog from "../models/auditLog.model.js";
+import authEmitter from "../events/auth.events.js";
 
 // ==========================================
 // 🛠️ HELPER: CREATE SECURE SESSION
@@ -101,7 +102,16 @@ const registerUser = requestHandler(async (req, res) => {
   const existingUser = await User.findOne({ $or: [{ email }, { username }] });
   if (existingUser) throw new ApiError(400, "User already exists");
 
-  const newUser = await User.create({ fullName, username, email, password });
+  const verificationToken = crypto.randomBytes(32).toString("hex");
+
+  const newUser = await User.create({ 
+    fullName, 
+    username, 
+    email, 
+    password,
+    isEmailVerified: false,
+    emailVerificationToken: verificationToken
+  });
 
   await AuditLog.create({
     userId: newUser._id,
@@ -111,14 +121,32 @@ const registerUser = requestHandler(async (req, res) => {
     status: "SUCCESS"
   });
 
-  // Auto-login (ACTIVE status)
-  await createSession(res, newUser._id, req, false, "ACTIVE");
+  // DO NOT AUTO-LOGIN until email is verified
+  authEmitter.emit("userRegistered", {
+    email: newUser.email,
+    fullName: newUser.fullName,
+    token: verificationToken,
+  });
 
   const createdUser = await User.findById(newUser._id);
 
   return res.status(201).json(
-    new ApiResponse(201, "Registered successfully", { user: sanitizeUser(createdUser) })
+    new ApiResponse(201, "Registration successful. Please check your email to verify your account.", { user: sanitizeUser(createdUser) })
   );
+});
+
+const verifyEmail = requestHandler(async (req, res) => {
+  const { token } = req.query;
+  if (!token) throw new ApiError(400, "Token is required");
+
+  const user = await User.findOne({ emailVerificationToken: token });
+  if (!user) throw new ApiError(400, "Invalid or expired token");
+
+  user.isEmailVerified = true;
+  user.emailVerificationToken = null;
+  await user.save();
+
+  return res.status(200).json(new ApiResponse(200, "Email verified successfully"));
 });
 
 const loginUser = requestHandler(async (req, res) => {
@@ -138,6 +166,10 @@ const loginUser = requestHandler(async (req, res) => {
   if (!foundUser) {
     await AuditLog.create({ action: "LOGIN", ip: req.ip, userAgent: req.headers["user-agent"], status: "FAILED", details: "User not found" });
     throw new ApiError(401, "Invalid credentials");
+  }
+
+  if (!foundUser.isEmailVerified) {
+    throw new ApiError(403, "Please verify your email before logging in.");
   }
 
   // Check Lockout
@@ -429,6 +461,7 @@ export {
   getActiveSessions,
   revokeSession,
   revokeOtherSessions,
+  verifyEmail,
   getUserProfile,
   status2fa,
   generate2faSecret,

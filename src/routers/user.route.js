@@ -15,6 +15,7 @@ import {
   getActiveSessions,
   revokeSession,
   revokeOtherSessions,
+  verifyEmail,
 } from "../controllers/user.controller.js";
 import authMiddleware from "../middlewares/auth.middleware.js";
 import ensureDeviceId from "../middlewares/device.middleware.js";
@@ -33,6 +34,7 @@ const twofaLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
 // Auth Routes
 userRouter.route("/login").post(loginLimiter, validate(loginSchema), loginUser);
 userRouter.route("/create").post(loginLimiter, validate(signupSchema), registerUser);
+userRouter.route("/verify-email").get(verifyEmail);
 userRouter.route("/logout").post(authMiddleware(), logoutUser);
 userRouter.route("/profile").get(authMiddleware(), getUserProfile);
 
