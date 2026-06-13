@@ -42,7 +42,7 @@ const createSession = async (res, userId, req, remember = false, status = "ACTIV
   // 4. Set Cookie
   const cookieOptions = {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production" || process.env.NODE_ENVIRONMENT === "production",
     sameSite: "strict",
     path: "/"
   };

@@ -5,9 +5,9 @@ import Session from "../models/session.model.js";
 import User from "../models/user.model.js";
 
 // ⏳ SECURITY POLICIES
-const IDLE_NORMAL = process.env.IDLE_NORMAL;
-const IDLE_REMEMBER = process.env.IDLE_REMEMBER;
-const ROTATION_WINDOW = process.env.ROTATION_WINDOW;
+const IDLE_NORMAL = process.env.IDLE_NORMAL ? parseInt(process.env.IDLE_NORMAL) : 1000 * 60 * 15; // 15 mins default
+const IDLE_REMEMBER = process.env.IDLE_REMEMBER ? parseInt(process.env.IDLE_REMEMBER) : 1000 * 60 * 60 * 24 * 30; // 30 days default
+const ROTATION_WINDOW = process.env.ROTATION_WINDOW ? parseInt(process.env.ROTATION_WINDOW) : 1000 * 60 * 60 * 24; // 1 day default
 
 
 // Authentication Middleware Usage: 
