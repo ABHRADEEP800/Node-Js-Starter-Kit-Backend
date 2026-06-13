@@ -6,7 +6,9 @@ import Session from "../models/session.model.js";
 import speakeasy from "speakeasy";
 import QRCode from "qrcode";
 import crypto from "crypto";
-import { UAParser } from "ua-parser-js"; // Fixed Import
+import { UAParser } from "ua-parser-js";
+import zxcvbn from "zxcvbn";
+import AuditLog from "../models/auditLog.model.js";
 
 // ==========================================
 // 🛠️ HELPER: CREATE SECURE SESSION
@@ -58,6 +60,20 @@ const createSession = async (res, userId, req, remember = false, status = "ACTIV
   }
 };
 
+const sanitizeUser = (user) => {
+  const sanitized = user.toObject ? user.toObject() : user;
+  delete sanitized.password;
+  delete sanitized.refreshToken;
+  delete sanitized.twofaCode;
+  delete sanitized.backupCodes;
+  delete sanitized.emailVerificationToken;
+  delete sanitized.passwordResetToken;
+  delete sanitized.passwordResetExpires;
+  delete sanitized.failedLoginAttempts;
+  delete sanitized.lockUntil;
+  return sanitized;
+};
+
 // ==========================================
 // 🚀 AUTHENTICATION CONTROLLERS
 // ==========================================
@@ -74,18 +90,31 @@ const registerUser = requestHandler(async (req, res) => {
 
   if (!fullName || !username || !email || !password) throw new ApiError(400, "All fields are required");
 
+  const pwdCheck = zxcvbn(password);
+  if (pwdCheck.score < 3) {
+    throw new ApiError(400, "Password is too weak. " + (pwdCheck.feedback.warning || "Please use a stronger password."));
+  }
+
   const existingUser = await User.findOne({ $or: [{ email }, { username }] });
   if (existingUser) throw new ApiError(400, "User already exists");
 
   const newUser = await User.create({ fullName, username, email, password });
 
+  await AuditLog.create({
+    userId: newUser._id,
+    action: "SIGNUP",
+    ip: req.ip,
+    userAgent: req.headers["user-agent"],
+    status: "SUCCESS"
+  });
+
   // Auto-login (ACTIVE status)
   await createSession(res, newUser._id, req, false, "ACTIVE");
 
-  const createdUser = await User.findById(newUser._id).select("-password -refreshToken");
+  const createdUser = await User.findById(newUser._id);
 
   return res.status(201).json(
-    new ApiResponse(201, "Registered successfully", { user: createdUser })
+    new ApiResponse(201, "Registered successfully", { user: sanitizeUser(createdUser) })
   );
 });
 
@@ -103,10 +132,34 @@ const loginUser = requestHandler(async (req, res) => {
   if (!username && !email) throw new ApiError(400, "username or email is required");
 
   const foundUser = await User.findOne(email ? { email } : { username });
-  if (!foundUser) throw new ApiError(404, "User not found");
+  if (!foundUser) {
+    await AuditLog.create({ action: "LOGIN", ip: req.ip, userAgent: req.headers["user-agent"], status: "FAILED", details: "User not found" });
+    throw new ApiError(401, "Invalid credentials");
+  }
+
+  // Check Lockout
+  if (foundUser.lockUntil && foundUser.lockUntil > Date.now()) {
+    await AuditLog.create({ userId: foundUser._id, action: "LOGIN", ip: req.ip, userAgent: req.headers["user-agent"], status: "FAILED", details: "Account locked" });
+    throw new ApiError(403, "Account is temporarily locked due to too many failed attempts. Try again later.");
+  }
 
   const isPasswordValid = await foundUser.isPasswordCorrect(password);
-  if (!isPasswordValid) throw new ApiError(401, "Invalid credentials");
+  if (!isPasswordValid) {
+    foundUser.failedLoginAttempts += 1;
+    if (foundUser.failedLoginAttempts >= 5) {
+      foundUser.lockUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
+    }
+    await foundUser.save({ validateBeforeSave: false });
+    await AuditLog.create({ userId: foundUser._id, action: "LOGIN", ip: req.ip, userAgent: req.headers["user-agent"], status: "FAILED", details: "Invalid password" });
+    throw new ApiError(401, "Invalid credentials");
+  }
+
+  // Reset Lockout
+  foundUser.failedLoginAttempts = 0;
+  foundUser.lockUntil = null;
+  await foundUser.save({ validateBeforeSave: false });
+
+  await AuditLog.create({ userId: foundUser._id, action: "LOGIN", ip: req.ip, userAgent: req.headers["user-agent"], status: "SUCCESS" });
 
   // 🔒 2FA CHECK
   if (foundUser.twofa === true) {
@@ -125,10 +178,10 @@ const loginUser = requestHandler(async (req, res) => {
   // ✅ NORMAL LOGIN (ACTIVE)
   await createSession(res, foundUser._id, req, rememberMe, "ACTIVE");
 
-  const loggedInUser = await User.findById(foundUser._id).select("-password -refreshToken");
+  const loggedInUser = await User.findById(foundUser._id);
 
   return res.status(200).json(
-    new ApiResponse(200, "Logged in successfully", { user: loggedInUser })
+    new ApiResponse(200, "Logged in successfully", { user: sanitizeUser(loggedInUser) })
   );
 });
 
@@ -158,29 +211,46 @@ const verify2faToken = requestHandler(async (req, res) => {
   // If already active, just return success
   if (session.status === "ACTIVE") {
     const user = await User.findById(session.user_id).select("-password");
-    return res.status(200).json(new ApiResponse(200, "Already logged in", { user }));
+    return res.status(200).json(new ApiResponse(200, "Already logged in", { user: sanitizeUser(user) }));
   }
 
   const user = await User.findById(session.user_id);
   if (!user) throw new ApiError(404, "User not found");
 
-  // 3. Verify OTP
-  const is2faValid = speakeasy.totp.verify({
+  // 3. Verify OTP or Backup Code
+  let is2faValid = speakeasy.totp.verify({
     secret: user.twofaCode,
     encoding: "base32",
     token: code,
   });
 
-  if (!is2faValid) throw new ApiError(401, "Invalid 2FA code");
+  if (!is2faValid) {
+    // Check backup codes
+    const backupIndex = user.backupCodes.indexOf(code);
+    if (backupIndex !== -1) {
+      is2faValid = true;
+      user.twofa = false;
+      user.twofaCode = null;
+      user.backupCodes = [];
+      await user.save({ validateBeforeSave: false });
+    }
+  }
+
+  if (!is2faValid) {
+    await AuditLog.create({ userId: user._id, action: "2FA_VERIFY", ip: req.ip, userAgent: req.headers["user-agent"], status: "FAILED" });
+    throw new ApiError(401, "Invalid 2FA code");
+  }
+
+  await AuditLog.create({ userId: user._id, action: "2FA_VERIFY", ip: req.ip, userAgent: req.headers["user-agent"], status: "SUCCESS" });
 
   // ✅ 4. UNLOCK SESSION
   session.status = "ACTIVE";
   await session.save();
 
-  const loggedInUser = await User.findById(user._id).select("-password -refreshToken");
+  const loggedInUser = await User.findById(user._id);
 
   return res.status(200).json(
-    new ApiResponse(200, "Logged in successfully", { user: loggedInUser })
+    new ApiResponse(200, "Logged in successfully", { user: sanitizeUser(loggedInUser) })
   );
 });
 
@@ -264,12 +334,8 @@ const revokeOtherSessions = requestHandler(async (req, res) => {
 
 const getUserProfile = requestHandler(async (req, res) => {
   const user = req.user || {}; 
-  const sanitized = user.toObject ? user.toObject() : user;
-  delete sanitized.password;
-  delete sanitized.refreshToken;
-
   return res.status(200).json(
-    new ApiResponse(200, "User profile fetched", { user: sanitized })
+    new ApiResponse(200, "User profile fetched", { user: sanitizeUser(user) })
   );
 });
 
@@ -291,8 +357,13 @@ const generate2faSecret = requestHandler(async (req, res) => {
 
   const qr = await QRCode.toDataURL(secret.otpauth_url);
 
+  // Generate 10 backup codes
+  const backupCodes = Array.from({ length: 10 }, () => crypto.randomBytes(4).toString("hex"));
+  foundUser.backupCodes = backupCodes;
+  await foundUser.save({ validateBeforeSave: false });
+
   return res.status(200).json(
-    new ApiResponse(200, "2FA secret generated", { qrCode: qr, secret: secret.base32 })
+    new ApiResponse(200, "2FA secret generated", { qrCode: qr, secret: secret.base32, backupCodes })
   );
 });
 
@@ -324,7 +395,7 @@ const changeName = requestHandler(async (req, res) => {
   foundUser.fullName = fullName || foundUser.fullName;
   await foundUser.save({ validateBeforeSave: false });
   
-  return res.status(200).json(new ApiResponse(200, "Name updated", { user: foundUser }));
+  return res.status(200).json(new ApiResponse(200, "Name updated", { user: sanitizeUser(foundUser) }));
 });
 
 const changePassword = requestHandler(async (req, res) => {
@@ -334,8 +405,15 @@ const changePassword = requestHandler(async (req, res) => {
   const isPasswordValid = await foundUser.isPasswordCorrect(currentPassword);
   if (!isPasswordValid) throw new ApiError(401, "Old password is incorrect");
   
+  const pwdCheck = zxcvbn(newPassword);
+  if (pwdCheck.score < 3) {
+    throw new ApiError(400, "Password is too weak. " + (pwdCheck.feedback.warning || "Please use a stronger password."));
+  }
+
   foundUser.password = newPassword;
   await foundUser.save();
+
+  await AuditLog.create({ userId: foundUser._id, action: "PASSWORD_CHANGE", ip: req.ip, userAgent: req.headers["user-agent"], status: "SUCCESS" });
 
   return res.status(200).json(new ApiResponse(200, "Password changed successfully"));
 });

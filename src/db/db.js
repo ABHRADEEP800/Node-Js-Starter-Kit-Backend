@@ -9,7 +9,7 @@ const connectDB = async () => {
     console.log(
       `\nMongoDB connected !! DB HOST: ${connectionInstance.connection.host}, DB NAME: ${connectionInstance.connection.name}`
     );
-    await redisClient.connect(); // Connect to Redis after MongoDB is connected
+     redisClient.connect(); // Connect to Redis after MongoDB is connected
   } catch (error) {
     console.error("MongoDB connection failed:", error);
     process.exit(1); // Exit the process with failure
