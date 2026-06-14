@@ -24,13 +24,20 @@ adminRouter.route("/users/:id").get(
     // Even though this is an admin route, let's explicitly document how IDOR is prevented.
     // If a normal user somehow bypassed the RBAC, we double-check ownership vs privilege.
     if (req.user.role !== "admin" && req.user._id.toString() !== targetUserId) {
-      throw new ApiError(403, "Access Denied: You do not have permission to view this resource.");
+      throw new ApiError(
+        403,
+        "Access Denied: You do not have permission to view this resource."
+      );
     }
 
-    const user = await User.findById(targetUserId).select("-password -refreshToken -twofaCode -backupCodes");
+    const user = await User.findById(targetUserId).select(
+      "-password -refreshToken -twofaCode -backupCodes"
+    );
     if (!user) throw new ApiError(404, "User not found");
 
-    return res.status(200).json(new ApiResponse(200, "User fetched successfully", { user }));
+    return res
+      .status(200)
+      .json(new ApiResponse(200, "User fetched successfully", { user }));
   })
 );
 

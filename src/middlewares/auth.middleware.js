@@ -5,13 +5,18 @@ import Session from "../models/session.model.js";
 import User from "../models/user.model.js";
 
 // ⏳ SECURITY POLICIES
-const IDLE_NORMAL = process.env.IDLE_NORMAL ? parseInt(process.env.IDLE_NORMAL) : 1000 * 60 * 15; // 15 mins default
-const IDLE_REMEMBER = process.env.IDLE_REMEMBER ? parseInt(process.env.IDLE_REMEMBER) : 1000 * 60 * 60 * 24 * 30; // 30 days default
-const ROTATION_WINDOW = process.env.ROTATION_WINDOW ? parseInt(process.env.ROTATION_WINDOW) : 1000 * 60 * 60 * 24; // 1 day default
+const IDLE_NORMAL = process.env.IDLE_NORMAL
+  ? parseInt(process.env.IDLE_NORMAL)
+  : 1000 * 60 * 15; // 15 mins default
+const IDLE_REMEMBER = process.env.IDLE_REMEMBER
+  ? parseInt(process.env.IDLE_REMEMBER)
+  : 1000 * 60 * 60 * 24 * 30; // 30 days default
+const ROTATION_WINDOW = process.env.ROTATION_WINDOW
+  ? parseInt(process.env.ROTATION_WINDOW)
+  : 1000 * 60 * 60 * 24; // 1 day default
 
-
-// Authentication Middleware Usage: 
-// authMiddleware() (no role restriction) 
+// Authentication Middleware Usage:
+// authMiddleware() (no role restriction)
 // authMiddleware(['admin']) (role restriction example)
 // authMiddleware(['admin', 'user']) (role restriction example)
 
@@ -79,7 +84,9 @@ const authMiddleware = (roles = []) =>
       // Issue New Cookie
       res.cookie("session_id", newSessionId, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure:
+          process.env.NODE_ENV === "production" ||
+          process.env.NODE_ENVIRONMENT === "production",
         sameSite: "strict",
         path: "/",
         maxAge: session.remember ? 30 * 24 * 60 * 60 * 1000 : undefined, // 30 Days or Session
@@ -98,7 +105,6 @@ const authMiddleware = (roles = []) =>
       "-password -refreshToken"
     );
     if (!user) throw new ApiError(401, "User context lost");
-
 
     if (roles.length > 0) {
       if (!roles.includes(user.role)) {

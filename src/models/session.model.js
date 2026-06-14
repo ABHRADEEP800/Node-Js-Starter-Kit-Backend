@@ -14,10 +14,10 @@ const sessionSchema = new mongoose.Schema(
     browser: { type: String },
     os: { type: String },
     remember: { type: Boolean, default: false },
-    status: { 
-      type: String, 
-      enum: ["PENDING_2FA", "ACTIVE"], 
-      default: "ACTIVE" 
+    status: {
+      type: String,
+      enum: ["PENDING_2FA", "ACTIVE"],
+      default: "ACTIVE",
     },
     last_seen: { type: Date, default: Date.now },
     revoked: { type: Boolean, default: false },

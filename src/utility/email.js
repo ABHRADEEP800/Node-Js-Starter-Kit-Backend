@@ -30,19 +30,22 @@ const initTransporter = async () => {
 export const sendEmail = async (to, subject, text, html) => {
   try {
     if (!transporter) await initTransporter();
-    
+
     const info = await transporter.sendMail({
-      from: `"Starter Kit" <${process.env.SMTP_USER || "no-reply@starterkit.com"}>`,
+      from: `"${process.env.PROJECT_NAME}" <${process.env.SMTP_FORM_EMAIL || "no-reply@starterkit.com"}>`,
       to,
       subject,
       text,
       html,
     });
     console.log("Message sent: %s", info.messageId);
-    
+
     // Automatically log the preview URL for Ethereal!
     if (!process.env.SMTP_USER) {
-      console.log("📧 Ethereal Preview URL: %s", nodemailer.getTestMessageUrl(info));
+      console.log(
+        "📧 Ethereal Preview URL: %s",
+        nodemailer.getTestMessageUrl(info)
+      );
     }
   } catch (error) {
     console.error("Error sending email", error);

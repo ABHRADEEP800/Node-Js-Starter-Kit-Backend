@@ -7,6 +7,13 @@ PROJECT_NAME=Starter Kit
 ALLOWED_ORIGINS=http://localhost:5173,http://localhost:4173
 
 
+SMTP_HOST=smtp.google.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=9hih
+SMTP_PASS=xsmtpsib-6d8c18a706d63b1f0b7
+SMTP_FORM_EMAIL=no-reply@abhradeep.com
+
 
 # Google reCAPTCHA Configs
 RECAPTCHA_SECRET_KEY=6Ld

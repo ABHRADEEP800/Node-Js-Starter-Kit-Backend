@@ -10,18 +10,25 @@ import { UAParser } from "ua-parser-js";
 import zxcvbn from "zxcvbn";
 import AuditLog from "../models/auditLog.model.js";
 import authEmitter from "../events/auth.events.js";
+import { rotateCsrfToken } from "../middlewares/csrf.middleware.js";
 
 // ==========================================
 // 🛠️ HELPER: CREATE SECURE SESSION
 // ==========================================
 // Now accepts 'status' to support PENDING_2FA state
-const createSession = async (res, userId, req, remember = false, status = "ACTIVE") => {
+const createSession = async (
+  res,
+  userId,
+  req,
+  remember = false,
+  status = "ACTIVE"
+) => {
   const sessionId = crypto.randomBytes(32).toString("hex");
   const userAgent = req.headers["user-agent"] || "";
-  
+
   // 1. Generate Security Hash
   const uaHash = crypto.createHash("sha256").update(userAgent).digest("hex");
-  
+
   // 2. Parse User Agent for UI
   const parser = new UAParser(userAgent);
   const browserName = parser.getBrowser().name || "Unknown Browser";
@@ -39,22 +46,24 @@ const createSession = async (res, userId, req, remember = false, status = "ACTIV
     remember: remember,
     status: status, // 👈 KEY: Controls if session is usable
     last_seen: new Date(),
-    revoked: false
+    revoked: false,
   });
 
   // 4. Set Cookie
   const cookieOptions = {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production" || process.env.NODE_ENVIRONMENT === "production",
+    secure:
+      process.env.NODE_ENV === "production" ||
+      process.env.NODE_ENVIRONMENT === "production",
     sameSite: "strict",
-    path: "/"
+    path: "/",
   };
 
   // If "Remember Me": 30 Days. Else: Session Cookie.
   if (remember) {
-    res.cookie("session_id", sessionId, { 
-      ...cookieOptions, 
-      maxAge: 30 * 24 * 60 * 60 * 1000 
+    res.cookie("session_id", sessionId, {
+      ...cookieOptions,
+      maxAge: 30 * 24 * 60 * 60 * 1000,
     });
   } else {
     res.cookie("session_id", sessionId, cookieOptions);
@@ -86,17 +95,25 @@ const registerUser = requestHandler(async (req, res) => {
   const { fullName, username, email, password, recaptchaToken } = req.body.user;
 
   if (!recaptchaToken) throw new ApiError(400, "reCAPTCHA token is required");
-  
+
   const verifyURL = `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`;
-  const data = await fetch(verifyURL, { method: "POST" }).then((res) => res.json());
+  const data = await fetch(verifyURL, { method: "POST" }).then((res) =>
+    res.json()
+  );
 
-  if (!data.success || data.score < 0.5) throw new ApiError(400, "reCAPTCHA verification failed");
+  if (!data.success || data.score < 0.5)
+    throw new ApiError(400, "reCAPTCHA verification failed");
 
-  if (!fullName || !username || !email || !password) throw new ApiError(400, "All fields are required");
+  if (!fullName || !username || !email || !password)
+    throw new ApiError(400, "All fields are required");
 
   const pwdCheck = zxcvbn(password);
   if (pwdCheck.score < 3) {
-    throw new ApiError(400, "Password is too weak. " + (pwdCheck.feedback.warning || "Please use a stronger password."));
+    throw new ApiError(
+      400,
+      "Password is too weak. " +
+        (pwdCheck.feedback.warning || "Please use a stronger password.")
+    );
   }
 
   const existingUser = await User.findOne({ $or: [{ email }, { username }] });
@@ -104,13 +121,13 @@ const registerUser = requestHandler(async (req, res) => {
 
   const verificationToken = crypto.randomBytes(32).toString("hex");
 
-  const newUser = await User.create({ 
-    fullName, 
-    username, 
-    email, 
+  const newUser = await User.create({
+    fullName,
+    username,
+    email,
     password,
     isEmailVerified: false,
-    emailVerificationToken: verificationToken
+    emailVerificationToken: verificationToken,
   });
 
   await AuditLog.create({
@@ -118,7 +135,7 @@ const registerUser = requestHandler(async (req, res) => {
     action: "SIGNUP",
     ip: req.ip,
     userAgent: req.headers["user-agent"],
-    status: "SUCCESS"
+    status: "SUCCESS",
   });
 
   // DO NOT AUTO-LOGIN until email is verified
@@ -130,9 +147,15 @@ const registerUser = requestHandler(async (req, res) => {
 
   const createdUser = await User.findById(newUser._id);
 
-  return res.status(201).json(
-    new ApiResponse(201, "Registration successful. Please check your email to verify your account.", { user: sanitizeUser(createdUser) })
-  );
+  return res
+    .status(201)
+    .json(
+      new ApiResponse(
+        201,
+        "Registration successful. Please check your email to verify your account.",
+        { user: sanitizeUser(createdUser) }
+      )
+    );
 });
 
 const verifyEmail = requestHandler(async (req, res) => {
@@ -146,7 +169,9 @@ const verifyEmail = requestHandler(async (req, res) => {
   user.emailVerificationToken = null;
   await user.save();
 
-  return res.status(200).json(new ApiResponse(200, "Email verified successfully"));
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "Email verified successfully"));
 });
 
 const loginUser = requestHandler(async (req, res) => {
@@ -154,17 +179,27 @@ const loginUser = requestHandler(async (req, res) => {
   const recaptchaToken = req.body.user.recaptchaToken;
 
   if (!recaptchaToken) throw new ApiError(400, "reCAPTCHA token is required");
-  
+
   const verifyURL = `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`;
-  const data = await fetch(verifyURL, { method: "POST" }).then((res) => res.json());
+  const data = await fetch(verifyURL, { method: "POST" }).then((res) =>
+    res.json()
+  );
 
-  if (!data.success || data.score < 0.5) throw new ApiError(400, "reCAPTCHA verification failed");
+  if (!data.success || data.score < 0.5)
+    throw new ApiError(400, "reCAPTCHA verification failed");
 
-  if (!username && !email) throw new ApiError(400, "username or email is required");
+  if (!username && !email)
+    throw new ApiError(400, "username or email is required");
 
   const foundUser = await User.findOne(email ? { email } : { username });
   if (!foundUser) {
-    await AuditLog.create({ action: "LOGIN", ip: req.ip, userAgent: req.headers["user-agent"], status: "FAILED", details: "User not found" });
+    await AuditLog.create({
+      action: "LOGIN",
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      status: "FAILED",
+      details: "User not found",
+    });
     throw new ApiError(401, "Invalid credentials");
   }
 
@@ -174,8 +209,18 @@ const loginUser = requestHandler(async (req, res) => {
 
   // Check Lockout
   if (foundUser.lockUntil && foundUser.lockUntil > Date.now()) {
-    await AuditLog.create({ userId: foundUser._id, action: "LOGIN", ip: req.ip, userAgent: req.headers["user-agent"], status: "FAILED", details: "Account locked" });
-    throw new ApiError(403, "Account is temporarily locked due to too many failed attempts. Try again later.");
+    await AuditLog.create({
+      userId: foundUser._id,
+      action: "LOGIN",
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      status: "FAILED",
+      details: "Account locked",
+    });
+    throw new ApiError(
+      403,
+      "Account is temporarily locked due to too many failed attempts. Try again later."
+    );
   }
 
   const isPasswordValid = await foundUser.isPasswordCorrect(password);
@@ -185,7 +230,14 @@ const loginUser = requestHandler(async (req, res) => {
       foundUser.lockUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
     }
     await foundUser.save({ validateBeforeSave: false });
-    await AuditLog.create({ userId: foundUser._id, action: "LOGIN", ip: req.ip, userAgent: req.headers["user-agent"], status: "FAILED", details: "Invalid password" });
+    await AuditLog.create({
+      userId: foundUser._id,
+      action: "LOGIN",
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      status: "FAILED",
+      details: "Invalid password",
+    });
     throw new ApiError(401, "Invalid credentials");
   }
 
@@ -194,7 +246,13 @@ const loginUser = requestHandler(async (req, res) => {
   foundUser.lockUntil = null;
   await foundUser.save({ validateBeforeSave: false });
 
-  await AuditLog.create({ userId: foundUser._id, action: "LOGIN", ip: req.ip, userAgent: req.headers["user-agent"], status: "SUCCESS" });
+  await AuditLog.create({
+    userId: foundUser._id,
+    action: "LOGIN",
+    ip: req.ip,
+    userAgent: req.headers["user-agent"],
+    status: "SUCCESS",
+  });
 
   // 🔒 2FA CHECK
   if (foundUser.twofa === true) {
@@ -202,10 +260,11 @@ const loginUser = requestHandler(async (req, res) => {
     // Cookie is set, but user cannot access protected routes yet.
     await createSession(res, foundUser._id, req, rememberMe, "PENDING_2FA");
 
+    const csrfToken = rotateCsrfToken(req, res);
     return res.status(200).json(
       new ApiResponse(200, "2FA verification required", {
         twofaEnabled: true,
-        // No temporary token needed! The cookie acts as the handle.
+        csrfToken,
       })
     );
   }
@@ -214,18 +273,23 @@ const loginUser = requestHandler(async (req, res) => {
   await createSession(res, foundUser._id, req, rememberMe, "ACTIVE");
 
   const loggedInUser = await User.findById(foundUser._id);
+  const csrfToken = rotateCsrfToken(req, res);
 
   return res.status(200).json(
-    new ApiResponse(200, "Logged in successfully", { user: sanitizeUser(loggedInUser) })
+    new ApiResponse(200, "Logged in successfully", {
+      user: sanitizeUser(loggedInUser),
+      csrfToken,
+    })
   );
 });
 
 const verify2faToken = requestHandler(async (req, res) => {
   const { code } = req.body;
-  
+
   // 1. Get Session from Cookie
   const sessionId = req.cookies.session_id;
-  if (!sessionId) throw new ApiError(401, "Session expired, please login again");
+  if (!sessionId)
+    throw new ApiError(401, "Session expired, please login again");
 
   // 2. Find the Pending Session
   const session = await Session.findById(sessionId);
@@ -242,11 +306,15 @@ const verify2faToken = requestHandler(async (req, res) => {
     res.clearCookie("session_id");
     throw new ApiError(401, "Validation time expired. Please login again.");
   }
-  
+
   // If already active, just return success
   if (session.status === "ACTIVE") {
     const user = await User.findById(session.user_id).select("-password");
-    return res.status(200).json(new ApiResponse(200, "Already logged in", { user: sanitizeUser(user) }));
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(200, "Already logged in", { user: sanitizeUser(user) })
+      );
   }
 
   const user = await User.findById(session.user_id);
@@ -272,20 +340,36 @@ const verify2faToken = requestHandler(async (req, res) => {
   }
 
   if (!is2faValid) {
-    await AuditLog.create({ userId: user._id, action: "2FA_VERIFY", ip: req.ip, userAgent: req.headers["user-agent"], status: "FAILED" });
+    await AuditLog.create({
+      userId: user._id,
+      action: "2FA_VERIFY",
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      status: "FAILED",
+    });
     throw new ApiError(401, "Invalid 2FA code");
   }
 
-  await AuditLog.create({ userId: user._id, action: "2FA_VERIFY", ip: req.ip, userAgent: req.headers["user-agent"], status: "SUCCESS" });
+  await AuditLog.create({
+    userId: user._id,
+    action: "2FA_VERIFY",
+    ip: req.ip,
+    userAgent: req.headers["user-agent"],
+    status: "SUCCESS",
+  });
 
   // ✅ 4. UNLOCK SESSION
   session.status = "ACTIVE";
   await session.save();
 
   const loggedInUser = await User.findById(user._id);
+  const csrfToken = rotateCsrfToken(req, res);
 
   return res.status(200).json(
-    new ApiResponse(200, "Logged in successfully", { user: sanitizeUser(loggedInUser) })
+    new ApiResponse(200, "Logged in successfully", {
+      user: sanitizeUser(loggedInUser),
+      csrfToken,
+    })
   );
 });
 
@@ -296,10 +380,12 @@ const logoutUser = requestHandler(async (req, res) => {
     await Session.findByIdAndUpdate(sessionId, { revoked: true });
   }
 
+  const csrfToken = rotateCsrfToken(req, res);
+
   return res
     .status(200)
     .clearCookie("session_id")
-    .json(new ApiResponse(200, "User logged out successfully"));
+    .json(new ApiResponse(200, "User logged out successfully", { csrfToken }));
 });
 
 // ==========================================
@@ -308,14 +394,14 @@ const logoutUser = requestHandler(async (req, res) => {
 
 const getActiveSessions = requestHandler(async (req, res) => {
   // Find all non-revoked sessions
-  const sessions = await Session.find({ 
-    user_id: req.user._id, 
-    revoked: false 
+  const sessions = await Session.find({
+    user_id: req.user._id,
+    revoked: false,
   }).sort({ last_seen: -1 });
 
   const currentSessionId = req.cookies.session_id;
 
-  const safeSessions = sessions.map(s => ({
+  const safeSessions = sessions.map((s) => ({
     id: s._id,
     ip: s.ip,
     browser: s.browser,
@@ -323,11 +409,13 @@ const getActiveSessions = requestHandler(async (req, res) => {
     lastSeen: s.last_seen,
     isCurrent: s._id === currentSessionId,
     remember: s.remember,
-    status: s.status 
+    status: s.status,
   }));
 
   return res.status(200).json(
-    new ApiResponse(200, "Active sessions fetched", { sessions: safeSessions })
+    new ApiResponse(200, "Active sessions fetched", {
+      sessions: safeSessions,
+    })
   );
 });
 
@@ -336,31 +424,41 @@ const revokeSession = requestHandler(async (req, res) => {
   const currentSessionId = req.cookies.session_id;
 
   if (sessionId === currentSessionId) {
-    throw new ApiError(400, "Cannot revoke current session. Use logout instead.");
+    throw new ApiError(
+      400,
+      "Cannot revoke current session. Use logout instead."
+    );
   }
 
-  const session = await Session.findOne({ _id: sessionId, user_id: req.user._id });
+  const session = await Session.findOne({
+    _id: sessionId,
+    user_id: req.user._id,
+  });
   if (!session) throw new ApiError(404, "Session not found");
 
   session.revoked = true;
   await session.save();
 
-  return res.status(200).json(new ApiResponse(200, "Device logged out successfully"));
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "Device logged out successfully"));
 });
 
 const revokeOtherSessions = requestHandler(async (req, res) => {
   const currentSessionId = req.cookies.session_id;
 
   await Session.updateMany(
-    { 
-      user_id: req.user._id, 
-      _id: { $ne: currentSessionId }, 
-      revoked: false 
+    {
+      user_id: req.user._id,
+      _id: { $ne: currentSessionId },
+      revoked: false,
     },
     { revoked: true }
   );
 
-  return res.status(200).json(new ApiResponse(200, "All other devices logged out"));
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "All other devices logged out"));
 });
 
 // ==========================================
@@ -368,22 +466,26 @@ const revokeOtherSessions = requestHandler(async (req, res) => {
 // ==========================================
 
 const getUserProfile = requestHandler(async (req, res) => {
-  const user = req.user || {}; 
-  return res.status(200).json(
-    new ApiResponse(200, "User profile fetched", { user: sanitizeUser(user) })
-  );
+  const user = req.user || {};
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(200, "User profile fetched", { user: sanitizeUser(user) })
+    );
 });
 
 const status2fa = requestHandler(async (req, res) => {
   const foundUser = await User.findById(req.user._id);
   return res.status(200).json(
-    new ApiResponse(200, "2FA status fetched", { twofaEnabled: foundUser.twofa === true })
+    new ApiResponse(200, "2FA status fetched", {
+      twofaEnabled: foundUser.twofa === true,
+    })
   );
 });
 
 const generate2faSecret = requestHandler(async (req, res) => {
   const foundUser = await User.findById(req.user._id);
-  
+
   const secret = speakeasy.generateSecret({
     name: ` ${process.env.PROJECT_NAME} (${foundUser.email || foundUser.username})`,
   });
@@ -393,12 +495,18 @@ const generate2faSecret = requestHandler(async (req, res) => {
   const qr = await QRCode.toDataURL(secret.otpauth_url);
 
   // Generate 10 backup codes
-  const backupCodes = Array.from({ length: 10 }, () => crypto.randomBytes(4).toString("hex"));
+  const backupCodes = Array.from({ length: 10 }, () =>
+    crypto.randomBytes(4).toString("hex")
+  );
   foundUser.backupCodes = backupCodes;
   await foundUser.save({ validateBeforeSave: false });
 
   return res.status(200).json(
-    new ApiResponse(200, "2FA secret generated", { qrCode: qr, secret: secret.base32, backupCodes })
+    new ApiResponse(200, "2FA secret generated", {
+      qrCode: qr,
+      secret: secret.base32,
+      backupCodes,
+    })
   );
 });
 
@@ -413,24 +521,30 @@ const change2faStatus = requestHandler(async (req, res) => {
   });
 
   if (!is2faValid) throw new ApiError(401, "Invalid 2FA code");
-  
+
   const newStatus = !foundUser.twofa;
   foundUser.twofa = newStatus;
   await foundUser.save({ validateBeforeSave: false });
 
   return res.status(200).json(
-    new ApiResponse(200, "2FA status changed", { twofaEnabled: newStatus === true })
+    new ApiResponse(200, "2FA status changed", {
+      twofaEnabled: newStatus === true,
+    })
   );
 });
 
 const changeName = requestHandler(async (req, res) => {
   const { fullName } = req.body;
   const foundUser = await User.findById(req.user._id);
-  
+
   foundUser.fullName = fullName || foundUser.fullName;
   await foundUser.save({ validateBeforeSave: false });
-  
-  return res.status(200).json(new ApiResponse(200, "Name updated", { user: sanitizeUser(foundUser) }));
+
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(200, "Name updated", { user: sanitizeUser(foundUser) })
+    );
 });
 
 const changePassword = requestHandler(async (req, res) => {
@@ -439,18 +553,217 @@ const changePassword = requestHandler(async (req, res) => {
 
   const isPasswordValid = await foundUser.isPasswordCorrect(currentPassword);
   if (!isPasswordValid) throw new ApiError(401, "Old password is incorrect");
-  
+
   const pwdCheck = zxcvbn(newPassword);
   if (pwdCheck.score < 3) {
-    throw new ApiError(400, "Password is too weak. " + (pwdCheck.feedback.warning || "Please use a stronger password."));
+    throw new ApiError(
+      400,
+      "Password is too weak. " +
+        (pwdCheck.feedback.warning || "Please use a stronger password.")
+    );
   }
 
   foundUser.password = newPassword;
   await foundUser.save();
 
-  await AuditLog.create({ userId: foundUser._id, action: "PASSWORD_CHANGE", ip: req.ip, userAgent: req.headers["user-agent"], status: "SUCCESS" });
+  await AuditLog.create({
+    userId: foundUser._id,
+    action: "PASSWORD_CHANGE",
+    ip: req.ip,
+    userAgent: req.headers["user-agent"],
+    status: "SUCCESS",
+  });
 
-  return res.status(200).json(new ApiResponse(200, "Password changed successfully"));
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "Password changed successfully"));
+});
+
+const forgotPassword = requestHandler(async (req, res) => {
+  const { email, recaptchaToken } = req.body;
+
+  if (!recaptchaToken) throw new ApiError(400, "reCAPTCHA token is required");
+
+  const verifyURL = `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`;
+  const data = await fetch(verifyURL, { method: "POST" }).then((res) =>
+    res.json()
+  );
+
+  if (!data.success || data.score < 0.5)
+    throw new ApiError(400, "reCAPTCHA verification failed");
+
+  if (!email) throw new ApiError(400, "Email is required");
+
+  const user = await User.findOne({ email });
+
+  if (user) {
+    const token = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+
+    user.passwordResetToken = hashedToken;
+    user.passwordResetExpires = Date.now() + 3600000; // 1 hour
+    await user.save({ validateBeforeSave: false });
+
+    // Emit event to send email
+    authEmitter.emit("passwordResetRequested", {
+      email: user.email,
+      fullName: user.fullName,
+      token,
+    });
+
+    await AuditLog.create({
+      userId: user._id,
+      action: "PASSWORD_RESET_REQUESTED",
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      status: "SUCCESS",
+    });
+  } else {
+    // Log failure for security auditing (preventing user enumeration exposure)
+    await AuditLog.create({
+      action: "PASSWORD_RESET_REQUESTED",
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      status: "FAILED",
+      details: `Password reset requested for non-existent email: ${email}`,
+    });
+  }
+
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        "If that email is registered, a password reset link has been sent. Please check your inbox."
+      )
+    );
+});
+
+const resetPassword = requestHandler(async (req, res) => {
+  const { token, password } = req.body;
+
+  if (!token || !password)
+    throw new ApiError(400, "Token and password are required");
+
+  const pwdCheck = zxcvbn(password);
+  if (pwdCheck.score < 3) {
+    throw new ApiError(
+      400,
+      "Password is too weak. " +
+        (pwdCheck.feedback.warning || "Please use a stronger password.")
+    );
+  }
+
+  const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+
+  const user = await User.findOne({
+    passwordResetToken: hashedToken,
+    passwordResetExpires: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw new ApiError(400, "Invalid or expired password reset token.");
+  }
+
+  user.password = password;
+  user.passwordResetToken = null;
+  user.passwordResetExpires = null;
+  user.failedLoginAttempts = 0;
+  user.lockUntil = null;
+  await user.save();
+
+  // Revoke all active sessions for this user
+  await Session.updateMany(
+    { user_id: user._id, revoked: false },
+    { revoked: true }
+  );
+
+  // Emit event to send email
+  authEmitter.emit("passwordResetSuccess", {
+    email: user.email,
+    fullName: user.fullName,
+  });
+
+  await AuditLog.create({
+    userId: user._id,
+    action: "PASSWORD_RESET_COMPLETED",
+    ip: req.ip,
+    userAgent: req.headers["user-agent"],
+    status: "SUCCESS",
+  });
+
+  res.clearCookie("session_id");
+
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        "Password reset successful. You can now login with your new password."
+      )
+    );
+});
+
+const checkUsername = requestHandler(async (req, res) => {
+  const { username } = req.query;
+
+  if (!username) {
+    throw new ApiError(400, "Username query parameter is required");
+  }
+
+  const usernameRegex = /^[a-zA-Z0-9_]+$/;
+  if (username.length < 3 || !usernameRegex.test(username)) {
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(400, "Invalid username format", { available: false })
+      );
+  }
+
+  const existingUser = await User.findOne({ username: username.toLowerCase() });
+
+  if (existingUser) {
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(200, "Username is already taken", { available: false })
+      );
+  }
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "Username is available", { available: true }));
+});
+
+const checkEmail = requestHandler(async (req, res) => {
+  const { email } = req.query;
+
+  if (!email) {
+    throw new ApiError(400, "Email query parameter is required");
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res
+      .status(200)
+      .json(new ApiResponse(400, "Invalid email format", { available: false }));
+  }
+
+  const existingUser = await User.findOne({ email: email.toLowerCase() });
+
+  if (existingUser) {
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(200, "Email is already registered", {
+          available: false,
+        })
+      );
+  }
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "Email is available", { available: true }));
 });
 
 export {
@@ -467,5 +780,9 @@ export {
   generate2faSecret,
   change2faStatus,
   changeName,
-  changePassword
+  changePassword,
+  forgotPassword,
+  resetPassword,
+  checkUsername,
+  checkEmail,
 };
