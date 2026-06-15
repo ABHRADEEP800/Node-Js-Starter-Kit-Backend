@@ -511,7 +511,7 @@ const generate2faSecret = requestHandler(async (req, res) => {
 });
 
 const change2faStatus = requestHandler(async (req, res) => {
-  const code = req.body.code;
+  const { code, enable } = req.body;
   const foundUser = await User.findById(req.user._id);
 
   const is2faValid = speakeasy.totp.verify({
@@ -522,7 +522,7 @@ const change2faStatus = requestHandler(async (req, res) => {
 
   if (!is2faValid) throw new ApiError(401, "Invalid 2FA code");
 
-  const newStatus = !foundUser.twofa;
+  const newStatus = enable !== undefined ? enable : !foundUser.twofa;
   foundUser.twofa = newStatus;
   await foundUser.save({ validateBeforeSave: false });
 
@@ -752,13 +752,11 @@ const checkEmail = requestHandler(async (req, res) => {
   const existingUser = await User.findOne({ email: email.toLowerCase() });
 
   if (existingUser) {
-    return res
-      .status(200)
-      .json(
-        new ApiResponse(200, "Email is already registered", {
-          available: false,
-        })
-      );
+    return res.status(200).json(
+      new ApiResponse(200, "Email is already registered", {
+        available: false,
+      })
+    );
   }
 
   return res

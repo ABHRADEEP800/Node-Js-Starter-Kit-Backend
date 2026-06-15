@@ -10,14 +10,9 @@ const CSRF_EXPIRY = 2 * 60 * 60 * 1000; // 2 hours
 const generateToken = (req) => {
   const salt = crypto.randomBytes(16).toString("hex");
   const timestamp = Date.now();
-  const sessionId = req.cookies.session_id || "";
-  const uaHash = crypto
-    .createHash("sha256")
-    .update(req.headers["user-agent"] || "")
-    .digest("hex");
 
-  // Bind the token to: salt, timestamp, current session state, and browser user agent
-  const message = `${salt}.${timestamp}.${sessionId}.${uaHash}`;
+  // Bind the token to: salt and timestamp, signed by server private secret
+  const message = `${salt}.${timestamp}`;
   const signature = crypto
     .createHmac("sha256", CSRF_SECRET)
     .update(message)
@@ -57,13 +52,7 @@ export const csrfProtection = requestHandler(async (req, res, next) => {
     }
 
     // 2. Validate cryptographic signature
-    const sessionId = req.cookies.session_id || "";
-    const uaHash = crypto
-      .createHash("sha256")
-      .update(req.headers["user-agent"] || "")
-      .digest("hex");
-
-    const message = `${salt}.${timestamp}.${sessionId}.${uaHash}`;
+    const message = `${salt}.${timestamp}`;
     const expectedSignature = crypto
       .createHmac("sha256", CSRF_SECRET)
       .update(message)

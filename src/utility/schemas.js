@@ -34,6 +34,7 @@ export const changeNameSchema = z.object({
 
 export const verify2FASchema = z.object({
   code: z.string().min(6), // 6 digit OTP or 10 digit backup code
+  enable: z.boolean().optional(),
 });
 
 export const revokeSessionSchema = z.object({
