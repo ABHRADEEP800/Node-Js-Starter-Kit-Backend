@@ -1,4 +1,5 @@
 import ApiError from "../utility/ApiError.js";
+import { systemLog } from "../events/systemLog.events.js";
 
 const errorHandler = (err, req, res, next) => {
   let error = err;
@@ -8,6 +9,18 @@ const errorHandler = (err, req, res, next) => {
     const message = error.message || "Something went wrong";
     error = new ApiError(statusCode, message, error?.errors || [], err.stack);
   }
+
+  systemLog({
+    level: error.statusCode >= 500 ? "ERROR" : "WARN",
+    event: "HTTP_ERROR",
+    message: error.message,
+    meta: {
+      statusCode: error.statusCode,
+      method: req.method,
+      path: req.originalUrl,
+      ip: req.ip,
+    },
+  });
 
   const response = {
     ...error,

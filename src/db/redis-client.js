@@ -1,5 +1,6 @@
 // redis-client.js
 import Redis from "redis";
+import { systemLog } from "../events/systemLog.events.js";
 
 class RedisClient {
   constructor() {
@@ -28,16 +29,31 @@ class RedisClient {
       this.client.on("error", (err) => {
         console.error("Redis Client Error:", err);
         this.isConnected = false;
+        systemLog({
+          level: "ERROR",
+          event: "REDIS_CONNECTION_ERROR",
+          message: err.message,
+        });
       });
 
       this.client.on("connect", () => {
         console.log("✅ Redis Client Connected");
         this.isConnected = true;
+        systemLog({
+          level: "INFO",
+          event: "REDIS_CONNECTED",
+          message: "Redis client connected",
+        });
       });
 
       this.client.on("disconnect", () => {
         console.log("❌ Redis Client Disconnected");
         this.isConnected = false;
+        systemLog({
+          level: "WARN",
+          event: "REDIS_DISCONNECTED",
+          message: "Redis client disconnected",
+        });
       });
 
       await this.client.connect();
@@ -45,6 +61,11 @@ class RedisClient {
     } catch (error) {
       console.error("Failed to connect to Redis:", error);
       this.isConnected = false;
+      systemLog({
+        level: "ERROR",
+        event: "REDIS_CONNECTION_FAILED",
+        message: error.message,
+      });
       return null;
     }
   }

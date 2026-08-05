@@ -27,3 +27,6 @@ MONGODB_URL=mongodb:
 IDLE_NORMAL = 10 * 60 * 1000; // 10 Minutes
 IDLE_REMEMBER = 7 * 24 * 60 * 60 * 1000; // 7 Days
 ROTATION_WINDOW = 15 * 60 * 1000; // 15 Minutes
+
+# Pepper for password hashing (keep secret, same value across app restarts)
+PASSWORD_PEPPER=replace-with-a-long-random-secret

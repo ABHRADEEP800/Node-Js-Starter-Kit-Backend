@@ -4,6 +4,7 @@ import User from "../models/user.model.js";
 import ApiError from "../utility/ApiError.js";
 import requestHandler from "../utility/requestHandeller.js";
 import ApiResponse from "../utility/ApiResponse.js";
+import toUserDTO from "../dto/user.dto.js";
 
 const adminRouter = express.Router();
 
@@ -37,7 +38,7 @@ adminRouter.route("/users/:id").get(
 
     return res
       .status(200)
-      .json(new ApiResponse(200, "User fetched successfully", { user }));
+      .json(new ApiResponse(200, "User fetched successfully", { user: toUserDTO(user) }));
   })
 );
 

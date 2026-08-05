@@ -8,8 +8,9 @@ import QRCode from "qrcode";
 import crypto from "crypto";
 import { UAParser } from "ua-parser-js";
 import zxcvbn from "zxcvbn";
-import AuditLog from "../models/auditLog.model.js";
 import authEmitter from "../events/auth.events.js";
+import { audit } from "../events/auditLog.events.js";
+import toUserDTO from "../dto/user.dto.js";
 import { rotateCsrfToken } from "../middlewares/csrf.middleware.js";
 
 // ==========================================
@@ -70,29 +71,13 @@ const createSession = async (
   }
 };
 
-const sanitizeUser = (user) => {
-  const sanitized = user.toObject ? user.toObject() : user;
-  delete sanitized.password;
-  delete sanitized.refreshToken;
-  delete sanitized.twofaCode;
-  delete sanitized.backupCodes;
-  delete sanitized.emailVerificationToken;
-  delete sanitized.passwordResetToken;
-  delete sanitized.passwordResetExpires;
-  delete sanitized.failedLoginAttempts;
-  delete sanitized.lockUntil;
-  delete sanitized.__v;
-  delete sanitized.createdAt;
-  delete sanitized.updatedAt;
-  return sanitized;
-};
-
 // ==========================================
 // 🚀 AUTHENTICATION CONTROLLERS
 // ==========================================
 
 const registerUser = requestHandler(async (req, res) => {
-  const { fullName, username, email, password, recaptchaToken } = req.body.user;
+  const { firstName, lastName, username, email, password, recaptchaToken } =
+    req.body.user;
 
   if (!recaptchaToken) throw new ApiError(400, "reCAPTCHA token is required");
 
@@ -104,7 +89,7 @@ const registerUser = requestHandler(async (req, res) => {
   if (!data.success || data.score < 0.5)
     throw new ApiError(400, "reCAPTCHA verification failed");
 
-  if (!fullName || !username || !email || !password)
+  if (!firstName || !lastName || !username || !email || !password)
     throw new ApiError(400, "All fields are required");
 
   const pwdCheck = zxcvbn(password);
@@ -122,7 +107,8 @@ const registerUser = requestHandler(async (req, res) => {
   const verificationToken = crypto.randomBytes(32).toString("hex");
 
   const newUser = await User.create({
-    fullName,
+    firstName,
+    lastName,
     username,
     email,
     password,
@@ -130,7 +116,7 @@ const registerUser = requestHandler(async (req, res) => {
     emailVerificationToken: verificationToken,
   });
 
-  await AuditLog.create({
+  audit({
     userId: newUser._id,
     action: "SIGNUP",
     ip: req.ip,
@@ -141,7 +127,8 @@ const registerUser = requestHandler(async (req, res) => {
   // DO NOT AUTO-LOGIN until email is verified
   authEmitter.emit("userRegistered", {
     email: newUser.email,
-    fullName: newUser.fullName,
+    firstName: newUser.firstName,
+    lastName: newUser.lastName,
     token: verificationToken,
   });
 
@@ -153,7 +140,7 @@ const registerUser = requestHandler(async (req, res) => {
       new ApiResponse(
         201,
         "Registration successful. Please check your email to verify your account.",
-        { user: sanitizeUser(createdUser) }
+        { user: toUserDTO(createdUser) }
       )
     );
 });
@@ -193,7 +180,7 @@ const loginUser = requestHandler(async (req, res) => {
 
   const foundUser = await User.findOne(email ? { email } : { username });
   if (!foundUser) {
-    await AuditLog.create({
+    audit({
       action: "LOGIN",
       ip: req.ip,
       userAgent: req.headers["user-agent"],
@@ -209,7 +196,7 @@ const loginUser = requestHandler(async (req, res) => {
 
   // Check Lockout
   if (foundUser.lockUntil && foundUser.lockUntil > Date.now()) {
-    await AuditLog.create({
+    audit({
       userId: foundUser._id,
       action: "LOGIN",
       ip: req.ip,
@@ -230,7 +217,7 @@ const loginUser = requestHandler(async (req, res) => {
       foundUser.lockUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
     }
     await foundUser.save({ validateBeforeSave: false });
-    await AuditLog.create({
+    audit({
       userId: foundUser._id,
       action: "LOGIN",
       ip: req.ip,
@@ -246,7 +233,7 @@ const loginUser = requestHandler(async (req, res) => {
   foundUser.lockUntil = null;
   await foundUser.save({ validateBeforeSave: false });
 
-  await AuditLog.create({
+  audit({
     userId: foundUser._id,
     action: "LOGIN",
     ip: req.ip,
@@ -277,7 +264,7 @@ const loginUser = requestHandler(async (req, res) => {
 
   return res.status(200).json(
     new ApiResponse(200, "Logged in successfully", {
-      user: sanitizeUser(loggedInUser),
+      user: toUserDTO(loggedInUser),
       csrfToken,
     })
   );
@@ -313,7 +300,7 @@ const verify2faToken = requestHandler(async (req, res) => {
     return res
       .status(200)
       .json(
-        new ApiResponse(200, "Already logged in", { user: sanitizeUser(user) })
+        new ApiResponse(200, "Already logged in", { user: toUserDTO(user) })
       );
   }
 
@@ -340,7 +327,7 @@ const verify2faToken = requestHandler(async (req, res) => {
   }
 
   if (!is2faValid) {
-    await AuditLog.create({
+    audit({
       userId: user._id,
       action: "2FA_VERIFY",
       ip: req.ip,
@@ -350,7 +337,7 @@ const verify2faToken = requestHandler(async (req, res) => {
     throw new ApiError(401, "Invalid 2FA code");
   }
 
-  await AuditLog.create({
+  audit({
     userId: user._id,
     action: "2FA_VERIFY",
     ip: req.ip,
@@ -367,7 +354,7 @@ const verify2faToken = requestHandler(async (req, res) => {
 
   return res.status(200).json(
     new ApiResponse(200, "Logged in successfully", {
-      user: sanitizeUser(loggedInUser),
+      user: toUserDTO(loggedInUser),
       csrfToken,
     })
   );
@@ -466,11 +453,11 @@ const revokeOtherSessions = requestHandler(async (req, res) => {
 // ==========================================
 
 const getUserProfile = requestHandler(async (req, res) => {
-  const user = req.user || {};
+  // req.user is guaranteed by authMiddleware()
   return res
     .status(200)
     .json(
-      new ApiResponse(200, "User profile fetched", { user: sanitizeUser(user) })
+      new ApiResponse(200, "User profile fetched", { user: toUserDTO(req.user) })
     );
 });
 
@@ -534,16 +521,17 @@ const change2faStatus = requestHandler(async (req, res) => {
 });
 
 const changeName = requestHandler(async (req, res) => {
-  const { fullName } = req.body;
+  const { firstName, lastName } = req.body;
   const foundUser = await User.findById(req.user._id);
 
-  foundUser.fullName = fullName || foundUser.fullName;
+  foundUser.firstName = firstName || foundUser.firstName;
+  foundUser.lastName = lastName || foundUser.lastName;
   await foundUser.save({ validateBeforeSave: false });
 
   return res
     .status(200)
     .json(
-      new ApiResponse(200, "Name updated", { user: sanitizeUser(foundUser) })
+      new ApiResponse(200, "Name updated", { user: toUserDTO(foundUser) })
     );
 });
 
@@ -566,7 +554,7 @@ const changePassword = requestHandler(async (req, res) => {
   foundUser.password = newPassword;
   await foundUser.save();
 
-  await AuditLog.create({
+  audit({
     userId: foundUser._id,
     action: "PASSWORD_CHANGE",
     ip: req.ip,
@@ -607,11 +595,12 @@ const forgotPassword = requestHandler(async (req, res) => {
     // Emit event to send email
     authEmitter.emit("passwordResetRequested", {
       email: user.email,
-      fullName: user.fullName,
+      firstName: user.firstName,
+      lastName: user.lastName,
       token,
     });
 
-    await AuditLog.create({
+    audit({
       userId: user._id,
       action: "PASSWORD_RESET_REQUESTED",
       ip: req.ip,
@@ -620,7 +609,7 @@ const forgotPassword = requestHandler(async (req, res) => {
     });
   } else {
     // Log failure for security auditing (preventing user enumeration exposure)
-    await AuditLog.create({
+    audit({
       action: "PASSWORD_RESET_REQUESTED",
       ip: req.ip,
       userAgent: req.headers["user-agent"],
@@ -681,10 +670,11 @@ const resetPassword = requestHandler(async (req, res) => {
   // Emit event to send email
   authEmitter.emit("passwordResetSuccess", {
     email: user.email,
-    fullName: user.fullName,
+    firstName: user.firstName,
+    lastName: user.lastName,
   });
 
-  await AuditLog.create({
+  audit({
     userId: user._id,
     action: "PASSWORD_RESET_COMPLETED",
     ip: req.ip,

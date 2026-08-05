@@ -95,6 +95,14 @@ app.use(express.static("public"));
 app.use(cookieParser());
 app.use(csrfProtection);
 
+// API responses are dynamic and per-user — never let the browser cache them.
+// Otherwise Express's default ETag triggers 304 Not Modified on refresh and the
+// browser serves a stale (possibly other-user) response body.
+app.use("/api", (req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
+});
+
 // CSRF Token Route
 app.get("/api/v1/csrf-token", generateCsrfToken);
 
