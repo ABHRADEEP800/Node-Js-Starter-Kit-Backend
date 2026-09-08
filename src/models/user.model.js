@@ -71,10 +71,8 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
 
-    refreshToken: {
-      type: String,
-      default: null,
-    },
+    // Issue 6: removed dead `refreshToken` field. This app uses cookie sessions,
+    // not JWT refresh tokens. The field was never written or read.
     backupCodes: {
       type: [String],
       default: [],
@@ -87,12 +85,27 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    // Issue 11: per-user passkey attempt counter / lockout. The IP-based
+    // passkeyLoginLimiter alone is bypassable across many IPs.
+    failedPasskeyAttempts: {
+      type: Number,
+      default: 0,
+    },
+    passkeyLockUntil: {
+      type: Date,
+      default: null,
+    },
     isEmailVerified: {
       type: Boolean,
       default: false,
     },
     emailVerificationToken: {
       type: String,
+      default: null,
+    },
+    // Issue 42: verification tokens expire (default 24h).
+    emailVerificationExpires: {
+      type: Date,
       default: null,
     },
     passwordResetToken: {

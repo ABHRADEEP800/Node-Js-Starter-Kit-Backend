@@ -5,8 +5,10 @@ const validate = (schema) => (req, res, next) => {
     req.body = schema.parse(req.body);
     next();
   } catch (err) {
-    const errors = err.errors.map((e) => ({
-      path: e.path.join("."),
+    // zod v4 exposes issues on `err.issues`; older versions used `err.errors`.
+    const issues = err?.issues || err?.errors || [];
+    const errors = issues.map((e) => ({
+      path: Array.isArray(e.path) ? e.path.join(".") : String(e.path ?? ""),
       message: e.message,
     }));
     next(new ApiError(400, "Validation Error", errors));

@@ -1,9 +1,10 @@
 import crypto from "crypto";
+import { isProd } from "./csrf.middleware.js";
 
 const ensureDeviceId = (req, res, next) => {
   const COOKIE_OPTS = {
     httpOnly: true,
-    secure: process.env.NODE_ENVIRONMENT === "production",
+    secure: isProd(),
     sameSite: "strict",
     path: "/",
     maxAge: 31536000000, // 1 Year

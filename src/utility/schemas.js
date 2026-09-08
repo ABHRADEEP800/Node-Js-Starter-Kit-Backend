@@ -35,7 +35,7 @@ export const changeNameSchema = z.object({
 });
 
 export const verify2FASchema = z.object({
-  code: z.string().min(6), // 6 digit OTP or 10 digit backup code
+  code: z.string().min(6), // 6 digit OTP or 8 hex backup code
   enable: z.boolean().optional(),
 });
 
@@ -51,4 +51,37 @@ export const forgotPasswordSchema = z.object({
 export const resetPasswordSchema = z.object({
   token: z.string().min(1),
   password: z.string().min(8),
+});
+
+// ==========================================
+// 🔑 PASSKEY (WEBAUTHN) SCHEMAS
+// ==========================================
+
+export const passkeyRegisterOptionsSchema = z.object({
+  name: z.string().min(1).max(64),
+});
+
+export const passkeyRegisterVerifySchema = z.object({
+  name: z.string().min(1).max(64),
+  response: z.any(),
+});
+
+export const passkeyLoginOptionsSchema = z.object({
+  // Empty string is treated as "no identifier" (empty allow-list) by the
+  // handler, so the field must accept "" as well as undefined.
+  identifier: z
+    .string()
+    .trim()
+    .max(320)
+    .optional()
+    .transform((v) => v || ""),
+  recaptchaToken: z.string().min(1),
+});
+
+export const passkeyLoginVerifySchema = z.object({
+  response: z.any(),
+});
+
+export const passkeyDeleteSchema = z.object({
+  id: z.string().min(1),
 });

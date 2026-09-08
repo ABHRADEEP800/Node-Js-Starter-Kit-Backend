@@ -1,6 +1,7 @@
 import requestHandler from "../utility/requestHandeller.js";
 import ApiError from "../utility/ApiError.js";
 import ApiResponse from "../utility/ApiResponse.js";
+import verifyRecaptcha from "../utility/verifyRecaptcha.js";
 import User from "../models/user.model.js";
 import Session from "../models/session.model.js";
 import speakeasy from "speakeasy";
@@ -11,7 +12,10 @@ import zxcvbn from "zxcvbn";
 import authEmitter from "../events/auth.events.js";
 import { audit } from "../events/auditLog.events.js";
 import toUserDTO from "../dto/user.dto.js";
-import { rotateCsrfToken } from "../middlewares/csrf.middleware.js";
+import {
+  rotateCsrfToken,
+  isProd,
+} from "../middlewares/csrf.middleware.js";
 
 // ==========================================
 // 🛠️ HELPER: CREATE SECURE SESSION
@@ -53,9 +57,7 @@ const createSession = async (
   // 4. Set Cookie
   const cookieOptions = {
     httpOnly: true,
-    secure:
-      process.env.NODE_ENV === "production" ||
-      process.env.NODE_ENVIRONMENT === "production",
+    secure: isProd(),
     sameSite: "strict",
     path: "/",
   };
@@ -81,13 +83,7 @@ const registerUser = requestHandler(async (req, res) => {
 
   if (!recaptchaToken) throw new ApiError(400, "reCAPTCHA token is required");
 
-  const verifyURL = `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`;
-  const data = await fetch(verifyURL, { method: "POST" }).then((res) =>
-    res.json()
-  );
-
-  if (!data.success || data.score < 0.5)
-    throw new ApiError(400, "reCAPTCHA verification failed");
+  await verifyRecaptcha(recaptchaToken);
 
   if (!firstName || !lastName || !username || !email || !password)
     throw new ApiError(400, "All fields are required");
@@ -104,16 +100,24 @@ const registerUser = requestHandler(async (req, res) => {
   const existingUser = await User.findOne({ $or: [{ email }, { username }] });
   if (existingUser) throw new ApiError(400, "User already exists");
 
-  const verificationToken = crypto.randomBytes(32).toString("hex");
+  // Issue 18 + 42: hash the verification token before storing it (same
+// approach as password reset), and set an expiry. The raw token is only
+// sent via the email link.
+const verificationToken = crypto.randomBytes(32).toString("hex");
+const hashedVerificationToken = crypto
+  .createHash("sha256")
+  .update(verificationToken)
+  .digest("hex");
 
-  const newUser = await User.create({
+const newUser = await User.create({
     firstName,
     lastName,
     username,
     email,
     password,
     isEmailVerified: false,
-    emailVerificationToken: verificationToken,
+    emailVerificationToken: hashedVerificationToken,
+    emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
   });
 
   audit({
@@ -132,15 +136,13 @@ const registerUser = requestHandler(async (req, res) => {
     token: verificationToken,
   });
 
-  const createdUser = await User.findById(newUser._id);
-
   return res
     .status(201)
     .json(
       new ApiResponse(
         201,
         "Registration successful. Please check your email to verify your account.",
-        { user: toUserDTO(createdUser) }
+        { user: toUserDTO(newUser) }
       )
     );
 });
@@ -149,11 +151,17 @@ const verifyEmail = requestHandler(async (req, res) => {
   const { token } = req.query;
   if (!token) throw new ApiError(400, "Token is required");
 
-  const user = await User.findOne({ emailVerificationToken: token });
+  // Issue 18 + 42: hash the incoming token and look up with an unexpired check.
+  const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+  const user = await User.findOne({
+    emailVerificationToken: hashedToken,
+    emailVerificationExpires: { $gt: new Date() },
+  });
   if (!user) throw new ApiError(400, "Invalid or expired token");
 
   user.isEmailVerified = true;
   user.emailVerificationToken = null;
+  user.emailVerificationExpires = null;
   await user.save();
 
   return res
@@ -167,13 +175,7 @@ const loginUser = requestHandler(async (req, res) => {
 
   if (!recaptchaToken) throw new ApiError(400, "reCAPTCHA token is required");
 
-  const verifyURL = `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`;
-  const data = await fetch(verifyURL, { method: "POST" }).then((res) =>
-    res.json()
-  );
-
-  if (!data.success || data.score < 0.5)
-    throw new ApiError(400, "reCAPTCHA verification failed");
+  await verifyRecaptcha(recaptchaToken);
 
   if (!username && !email)
     throw new ApiError(400, "username or email is required");
@@ -194,8 +196,11 @@ const loginUser = requestHandler(async (req, res) => {
     throw new ApiError(403, "Please verify your email before logging in.");
   }
 
-  // Check Lockout
-  if (foundUser.lockUntil && foundUser.lockUntil > Date.now()) {
+// Check Lockout (Issue 12: explicit Date.now() comparison, not object coercion).
+  if (
+    foundUser.lockUntil &&
+    new Date(foundUser.lockUntil).getTime() > Date.now()
+  ) {
     audit({
       userId: foundUser._id,
       action: "LOGIN",
@@ -213,8 +218,15 @@ const loginUser = requestHandler(async (req, res) => {
   const isPasswordValid = await foundUser.isPasswordCorrect(password);
   if (!isPasswordValid) {
     foundUser.failedLoginAttempts += 1;
+    // Issue 14: exponential lockout. First lock is 15 min; each subsequent
+    // re-lock doubles (capped at 24h). Linear "always 15 min" lets an
+    // attacker wait out the lock and try again forever.
     if (foundUser.failedLoginAttempts >= 5) {
-      foundUser.lockUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
+      const priorLocks = foundUser.lockUntil && foundUser.lockUntil < new Date()
+        ? Math.min(24, (foundUser.failedLoginAttempts / 5))
+        : 1;
+      const lockMinutes = 15 * priorLocks;
+      foundUser.lockUntil = new Date(Date.now() + lockMinutes * 60 * 1000);
     }
     await foundUser.save({ validateBeforeSave: false });
     audit({
@@ -231,6 +243,10 @@ const loginUser = requestHandler(async (req, res) => {
   // Reset Lockout
   foundUser.failedLoginAttempts = 0;
   foundUser.lockUntil = null;
+  // Issue 11: a successful password login should also reset passkey counters,
+  // since both gates protect the same account.
+  foundUser.failedPasskeyAttempts = 0;
+  foundUser.passkeyLockUntil = null;
   await foundUser.save({ validateBeforeSave: false });
 
   audit({
@@ -259,12 +275,12 @@ const loginUser = requestHandler(async (req, res) => {
   // ✅ NORMAL LOGIN (ACTIVE)
   await createSession(res, foundUser._id, req, rememberMe, "ACTIVE");
 
-  const loggedInUser = await User.findById(foundUser._id);
+  // `foundUser` is already saved & current in memory — no need to re-fetch.
   const csrfToken = rotateCsrfToken(req, res);
 
   return res.status(200).json(
     new ApiResponse(200, "Logged in successfully", {
-      user: toUserDTO(loggedInUser),
+      user: toUserDTO(foundUser),
       csrfToken,
     })
   );
@@ -307,6 +323,12 @@ const verify2faToken = requestHandler(async (req, res) => {
   const user = await User.findById(session.user_id);
   if (!user) throw new ApiError(404, "User not found");
 
+  // Issue 25: validate twofaCode exists before invoking speakeasy — otherwise
+  // a deleted/disabled-2FA state produces a confusing 500.
+  if (!user.twofaCode) {
+    throw new ApiError(400, "2FA is not configured for this account");
+  }
+
   // 3. Verify OTP or Backup Code
   let is2faValid = speakeasy.totp.verify({
     secret: user.twofaCode,
@@ -315,13 +337,13 @@ const verify2faToken = requestHandler(async (req, res) => {
   });
 
   if (!is2faValid) {
-    // Check backup codes
+    // Issue 43: only consume the single backup code, don't drop the rest.
     const backupIndex = user.backupCodes.indexOf(code);
     if (backupIndex !== -1) {
       is2faValid = true;
-      user.twofa = false;
-      user.twofaCode = null;
-      user.backupCodes = [];
+      // Issue 13: backup-code use MUST NOT disable 2FA. Mark the code used
+      // and let the user regenerate new codes from settings if needed.
+      user.backupCodes.splice(backupIndex, 1);
       await user.save({ validateBeforeSave: false });
     }
   }
@@ -349,12 +371,12 @@ const verify2faToken = requestHandler(async (req, res) => {
   session.status = "ACTIVE";
   await session.save();
 
-  const loggedInUser = await User.findById(user._id);
+  // `user` is already loaded & in-memory — no need to re-fetch.
   const csrfToken = rotateCsrfToken(req, res);
 
   return res.status(200).json(
     new ApiResponse(200, "Logged in successfully", {
-      user: toUserDTO(loggedInUser),
+      user: toUserDTO(user),
       csrfToken,
     })
   );
@@ -457,7 +479,9 @@ const getUserProfile = requestHandler(async (req, res) => {
   return res
     .status(200)
     .json(
-      new ApiResponse(200, "User profile fetched", { user: toUserDTO(req.user) })
+      new ApiResponse(200, "User profile fetched", {
+        user: toUserDTO(req.user),
+      })
     );
 });
 
@@ -481,18 +505,21 @@ const generate2faSecret = requestHandler(async (req, res) => {
 
   const qr = await QRCode.toDataURL(secret.otpauth_url);
 
-  // Generate 10 backup codes
-  const backupCodes = Array.from({ length: 10 }, () =>
+  // Issue 40: preserve any unused backup codes instead of replacing the lot.
+  const newBackupCodes = Array.from({ length: 10 }, () =>
     crypto.randomBytes(4).toString("hex")
   );
-  foundUser.backupCodes = backupCodes;
+  foundUser.backupCodes = [
+    ...(foundUser.backupCodes || []),
+    ...newBackupCodes,
+  ];
   await foundUser.save({ validateBeforeSave: false });
 
   return res.status(200).json(
     new ApiResponse(200, "2FA secret generated", {
       qrCode: qr,
       secret: secret.base32,
-      backupCodes,
+      backupCodes: newBackupCodes,
     })
   );
 });
@@ -500,6 +527,11 @@ const generate2faSecret = requestHandler(async (req, res) => {
 const change2faStatus = requestHandler(async (req, res) => {
   const { code, enable } = req.body;
   const foundUser = await User.findById(req.user._id);
+
+  // Issue 25: validate secret exists.
+  if (!foundUser.twofaCode) {
+    throw new ApiError(400, "Generate a 2FA secret first");
+  }
 
   const is2faValid = speakeasy.totp.verify({
     secret: foundUser.twofaCode,
@@ -530,9 +562,7 @@ const changeName = requestHandler(async (req, res) => {
 
   return res
     .status(200)
-    .json(
-      new ApiResponse(200, "Name updated", { user: toUserDTO(foundUser) })
-    );
+    .json(new ApiResponse(200, "Name updated", { user: toUserDTO(foundUser) }));
 });
 
 const changePassword = requestHandler(async (req, res) => {
@@ -572,13 +602,7 @@ const forgotPassword = requestHandler(async (req, res) => {
 
   if (!recaptchaToken) throw new ApiError(400, "reCAPTCHA token is required");
 
-  const verifyURL = `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`;
-  const data = await fetch(verifyURL, { method: "POST" }).then((res) =>
-    res.json()
-  );
-
-  if (!data.success || data.score < 0.5)
-    throw new ApiError(400, "reCAPTCHA verification failed");
+  await verifyRecaptcha(recaptchaToken);
 
   if (!email) throw new ApiError(400, "Email is required");
 
@@ -589,7 +613,8 @@ const forgotPassword = requestHandler(async (req, res) => {
     const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
 
     user.passwordResetToken = hashedToken;
-    user.passwordResetExpires = Date.now() + 3600000; // 1 hour
+    // Issue 4: store as a Date, not a number, to match the schema type.
+    user.passwordResetExpires = new Date(Date.now() + 3600000); // 1 hour
     await user.save({ validateBeforeSave: false });
 
     // Emit event to send email
@@ -608,13 +633,14 @@ const forgotPassword = requestHandler(async (req, res) => {
       status: "SUCCESS",
     });
   } else {
-    // Log failure for security auditing (preventing user enumeration exposure)
+    // Issue 17: do NOT log the raw email on failure. Anyone with audit-log
+    // read access would otherwise be able to enumerate attempted addresses.
     audit({
       action: "PASSWORD_RESET_REQUESTED",
       ip: req.ip,
       userAgent: req.headers["user-agent"],
       status: "FAILED",
-      details: `Password reset requested for non-existent email: ${email}`,
+      details: "Password reset requested for non-existent email",
     });
   }
 
@@ -647,7 +673,7 @@ const resetPassword = requestHandler(async (req, res) => {
 
   const user = await User.findOne({
     passwordResetToken: hashedToken,
-    passwordResetExpires: { $gt: Date.now() },
+    passwordResetExpires: { $gt: new Date() },
   });
 
   if (!user) {
@@ -703,8 +729,9 @@ const checkUsername = requestHandler(async (req, res) => {
 
   const usernameRegex = /^[a-zA-Z0-9_]+$/;
   if (username.length < 3 || !usernameRegex.test(username)) {
+    // Issue 77: 400 HTTP status (not 200) to match the body statusCode.
     return res
-      .status(200)
+      .status(400)
       .json(
         new ApiResponse(400, "Invalid username format", { available: false })
       );
@@ -735,7 +762,7 @@ const checkEmail = requestHandler(async (req, res) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
     return res
-      .status(200)
+      .status(400)
       .json(new ApiResponse(400, "Invalid email format", { available: false }));
   }
 

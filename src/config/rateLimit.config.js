@@ -1,7 +1,7 @@
 import parseForwarded from "forwarded-parse";
 import { ipKeyGenerator } from "express-rate-limit";
 
-const smartKeyGenerator = (req, res) => {
+const smartKeyGenerator = (req, _res) => {
   let ip = req.ip;
   try {
     if (req.headers.forwarded) {

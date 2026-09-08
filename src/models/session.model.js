@@ -30,6 +30,10 @@ sessionSchema.index(
   { expireAfterSeconds: 30 * 24 * 60 * 60 }
 );
 
+// Every per-user session query (list active devices, revoke, "logout others")
+// filters by user_id; a compound index keeps those fast on large collections.
+sessionSchema.index({ user_id: 1, last_seen: -1 });
+
 const Session =
   mongoose.models.Session || mongoose.model("Session", sessionSchema);
 export default Session;

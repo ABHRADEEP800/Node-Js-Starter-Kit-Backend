@@ -32,7 +32,7 @@ adminRouter.route("/users/:id").get(
     }
 
     const user = await User.findById(targetUserId).select(
-      "-password -refreshToken -twofaCode -backupCodes"
+      "-password -twofaCode -backupCodes"
     );
     if (!user) throw new ApiError(404, "User not found");
 

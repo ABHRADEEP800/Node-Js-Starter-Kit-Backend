@@ -3,6 +3,7 @@ import requestHandler from "../utility/requestHandeller.js";
 import ApiError from "../utility/ApiError.js";
 import Session from "../models/session.model.js";
 import User from "../models/user.model.js";
+import { isProd } from "./csrf.middleware.js";
 
 // ⏳ SECURITY POLICIES
 const IDLE_NORMAL = process.env.IDLE_NORMAL
@@ -39,6 +40,7 @@ const authMiddleware = (roles = []) =>
     const session = await Session.findById(sessionId);
     if (!session || session.revoked) {
       res.clearCookie("session_id");
+      res.clearCookie("device_id"); // Issue 35: clear stale device too
       throw new ApiError(401, "Session invalid or expired");
     }
 
@@ -47,10 +49,18 @@ const authMiddleware = (roles = []) =>
     }
 
     // 2. SECURITY BINDING CHECKS
-    if (session.device_id !== deviceId)
-      throw new ApiError(401, "Device mismatch - Security Alert");
-    if (session.ua_hash !== uaHash)
-      throw new ApiError(401, "Browser mismatch - Security Alert");
+    // Issue 26: combine device + UA checks (one DB write instead of two).
+    if (session.device_id !== deviceId || session.ua_hash !== uaHash) {
+      await Session.findByIdAndUpdate(sessionId, { revoked: true });
+      res.clearCookie("session_id");
+      res.clearCookie("device_id");
+      throw new ApiError(
+        401,
+        session.device_id !== deviceId
+          ? "Device mismatch - Security Alert"
+          : "Browser mismatch - Security Alert"
+      );
+    }
 
     // 3. IDLE TIMEOUT CHECK
     const now = Date.now();
@@ -60,6 +70,7 @@ const authMiddleware = (roles = []) =>
     if (now - lastSeen > allowedIdle) {
       await Session.findByIdAndUpdate(sessionId, { revoked: true });
       res.clearCookie("session_id");
+      res.clearCookie("device_id");
       throw new ApiError(401, "Session timed out");
     }
 
@@ -84,12 +95,11 @@ const authMiddleware = (roles = []) =>
       // Issue New Cookie
       res.cookie("session_id", newSessionId, {
         httpOnly: true,
-        secure:
-          process.env.NODE_ENV === "production" ||
-          process.env.NODE_ENVIRONMENT === "production",
+        secure: isProd(),
         sameSite: "strict",
         path: "/",
-        maxAge: session.remember ? 30 * 24 * 60 * 60 * 1000 : undefined, // 30 Days or Session
+        // Issue 5: align cookie lifetime with server-side idle timeout.
+        maxAge: session.remember ? IDLE_REMEMBER : IDLE_NORMAL,
       });
 
       // Update req for phantom token
@@ -101,9 +111,7 @@ const authMiddleware = (roles = []) =>
     }
 
     // 5. ATTACH USER (Phantom Token)
-    const user = await User.findById(session.user_id).select(
-      "-password -refreshToken"
-    );
+    const user = await User.findById(session.user_id).select("-password");
     if (!user) throw new ApiError(401, "User context lost");
 
     if (roles.length > 0) {

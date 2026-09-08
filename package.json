@@ -8,15 +8,17 @@
   },
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon -r dotenv/config src/server.js",
-    "format": "prettier --write src/*.js src/**/*.js",
-    "start": "node -r dotenv/config src/server.js"
+    "dev": "node scripts/dev-mongo.js",
+    "dev:real": "nodemon -r dotenv/config src/server.js",
+    "format": "prettier --write \"src/**/*.js\"",
+    "start": "node -r dotenv/config src/server.js",
+    "lint": "eslint \"src/**/*.js\""
   },
   "author": "Tanmoy",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@simplewebauthn/server": "^13.3.3",
     "bcrypt": "^6.0.0",
     "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
@@ -42,6 +44,8 @@
     "zxcvbn": "^4.4.2"
   },
   "devDependencies": {
+    "eslint": "^9.39.5",
+    "mongodb-memory-server": "^11.2.0",
     "nodemon": "^3.1.10",
     "prettier": "^3.6.2"
   }

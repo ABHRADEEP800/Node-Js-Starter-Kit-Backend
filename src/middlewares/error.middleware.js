@@ -1,7 +1,8 @@
 import ApiError from "../utility/ApiError.js";
 import { systemLog } from "../events/systemLog.events.js";
+import { isProd } from "./csrf.middleware.js";
 
-const errorHandler = (err, req, res, next) => {
+const errorHandler = (err, req, res, _next) => {
   let error = err;
 
   if (!(error instanceof ApiError)) {
@@ -25,10 +26,9 @@ const errorHandler = (err, req, res, next) => {
   const response = {
     ...error,
     message: error.message,
-    ...(process.env.NODE_ENV === "development" ||
-    process.env.NODE_ENVIRONMENT === "development"
-      ? { stack: error.stack }
-      : {}),
+    ...(isProd()
+      ? {}
+      : { stack: error.stack }),
   };
 
   return res.status(error.statusCode).json(response);

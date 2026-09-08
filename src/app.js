@@ -9,6 +9,7 @@ import compression from "compression";
 import mongoSanitize from "express-mongo-sanitize";
 import rateLimit from "express-rate-limit";
 import errorHandler from "./middlewares/error.middleware.js";
+import ensureDeviceId from "./middlewares/device.middleware.js";
 import {
   csrfProtection,
   generateCsrfToken,
@@ -16,7 +17,15 @@ import {
 
 const app = express();
 
-app.set("trust proxy", 1);
+// Issue 20: explicit trust proxy count. If you deploy behind a chain of
+// proxies, set TRUST_PROXY_COUNT to the exact hop count, otherwise leave at 1
+// (single hop, e.g. one ALB / CDN).
+app.set(
+  "trust proxy",
+  process.env.TRUST_PROXY_COUNT
+    ? parseInt(process.env.TRUST_PROXY_COUNT)
+    : 1
+);
 
 // 🚨 ALWAYS PUT CORS AT THE VERY TOP
 app.use(
@@ -25,20 +34,21 @@ app.use(
       // Allow requests with no origin (like mobile apps, curl, or server-to-server)
       if (!origin) return callback(null, true);
       const allowedOrigins = process.env.ALLOWED_ORIGINS
-        ? process.env.ALLOWED_ORIGINS.split(",")
+        ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
         : [];
-      // Allow if origin is in list, or if it's localhost in development
-      if (
-        allowedOrigins.includes(origin) ||
-        origin.startsWith("http://localhost:") ||
-        origin.startsWith("http://127.0.0.1:")
-      ) {
+      // Issue 19: removed the implicit localhost/* whitelist. In production
+      // that allows any localhost-spoofed request through. ALLOWED_ORIGINS is
+      // the only source of truth now.
+      if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error("Not allowed by CORS"));
       }
     },
     credentials: true,
+    // Cache preflight responses so the browser doesn't re-issue an OPTIONS
+    // request for every POST (halves the round-trips to the API server).
+    maxAge: 86400,
     allowedHeaders: [
       "Content-Type",
       "Authorization",
@@ -93,6 +103,10 @@ app.use((req, res, next) => {
 
 app.use(express.static("public"));
 app.use(cookieParser());
+// Issue 22 / batch 2: ensureDeviceId must run BEFORE csrfProtection so the
+// device_id cookie exists when CSRF tokens are minted/verified (CSRF is
+// bound to sessionId|deviceId|"anon" to prevent cross-session replay).
+app.use(ensureDeviceId);
 app.use(csrfProtection);
 
 // API responses are dynamic and per-user — never let the browser cache them.

@@ -10,12 +10,14 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install
 
-
 # Copy the rest of the application code
 COPY . .
 
 # Expose the port the app runs on
 EXPOSE 5000
+
+# Issue 114: drop root privileges. node:22-alpine ships with a `node` user.
+USER node
 
 # Command to run the application
 CMD ["node", "src/server.js"]

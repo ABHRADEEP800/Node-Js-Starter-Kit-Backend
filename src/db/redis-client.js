@@ -15,13 +15,17 @@ class RedisClient {
       this.client = Redis.createClient({
         url: process.env.REDIS_URL,
         socket: {
-          connectTimeout: 60000,
+          // Redis is optional at boot (no request path uses it). Fail fast
+          // instead of blocking startup for up to a minute.
+          connectTimeout: 5000,
           reconnectStrategy: (retries) => {
-            if (retries > 10) {
-              console.log("Too many retries on Redis. Giving up.");
+            if (retries > 5) {
+              console.log(
+                "Redis connect failed after retries. Continuing without Redis."
+              );
               return new Error("Too many retries");
             }
-            return Math.min(retries * 100, 3000);
+            return Math.min(retries * 200, 2000);
           },
         },
       });
