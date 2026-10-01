@@ -16,6 +16,8 @@ import {
   rotateCsrfToken,
   isProd,
 } from "../middlewares/csrf.middleware.js";
+import { isChildDob, recordGuardianConsent } from "../services/age.service.js";
+import { recordSignupConsents } from "../services/consent.service.js";
 
 // ==========================================
 // 🛠️ HELPER: CREATE SECURE SESSION
@@ -71,6 +73,13 @@ const createSession = async (
   } else {
     res.cookie("session_id", sessionId, cookieOptions);
   }
+
+  // IMPORTANT: reflect the new session id on the request so a CSRF token minted
+  // later in the SAME handler (rotateCsrfToken) is bound to THIS session — not
+  // to the pre-login device_id/anon. Without this, the token is bound to the
+  // old key while the browser sends the new session_id, and every subsequent
+  // write fails with "CSRF validation failed".
+  req.cookies.session_id = sessionId;
 };
 
 // ==========================================
@@ -78,8 +87,27 @@ const createSession = async (
 // ==========================================
 
 const registerUser = requestHandler(async (req, res) => {
-  const { firstName, lastName, username, email, password, recaptchaToken } =
-    req.body.user;
+  const {
+    firstName,
+    lastName,
+    username,
+    email,
+    password,
+    recaptchaToken,
+    dateOfBirth,
+    consentAccepted,
+    optionalConsent,
+    language,
+    guardian,
+  } = req.body.user;
+
+  // ---- DPDP s. 6: consent must be an explicit, affirmative act. The schema
+  // already enforces `true`; this is defence-in-depth.
+  if (consentAccepted !== true)
+    throw new ApiError(
+      400,
+      "Consent to the privacy notice is required before we can create your account (s. 6)."
+    );
 
   if (!recaptchaToken) throw new ApiError(400, "reCAPTCHA token is required");
 
@@ -100,6 +128,28 @@ const registerUser = requestHandler(async (req, res) => {
   const existingUser = await User.findOne({ $or: [{ email }, { username }] });
   if (existingUser) throw new ApiError(400, "User already exists");
 
+  // ---- DPDP s. 9: age gate BEFORE any processing. Unknown age ⇒ treated as a
+  // child until verified otherwise (deny-by-default).
+  const dob = dateOfBirth ? new Date(dateOfBirth) : null;
+  if (!dob || Number.isNaN(dob.getTime()))
+    throw new ApiError(400, "A valid date of birth is required (s. 9 age gate).");
+  // Reject future dates and implausibly old ones — a future DOB would satisfy
+  // the age gate as a (negative-age) child while being obviously invalid.
+  if (dob.getTime() > Date.now())
+    throw new ApiError(400, "Date of birth cannot be in the future.");
+  if (dob.getTime() < new Date("1900-01-01").getTime())
+    throw new ApiError(400, "Please enter a valid date of birth.");
+  const child = isChildDob(dob);
+
+  // A child may not be onboarded without verifiable parental/guardian consent
+  // (s. 9(1), Rule 10). We require the guardian details up front.
+  if (child && (!guardian || !guardian.name)) {
+    throw new ApiError(
+      400,
+      "Because you are under 18, verifiable parental/guardian consent is required to create an account (s. 9, Rule 10)."
+    );
+  }
+
   // Issue 18 + 42: hash the verification token before storing it (same
 // approach as password reset), and set an expiry. The raw token is only
 // sent via the email link.
@@ -118,15 +168,48 @@ const newUser = await User.create({
     isEmailVerified: false,
     emailVerificationToken: hashedVerificationToken,
     emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    // ---- DPDP fields ----
+    dateOfBirth: dob,
+    isChild: child,
+    telemetryDisabled: true, // deny-by-default; enabled only with analytics consent
+    purposeId: "account",
+    lawfulBasis: "consent",
+    accountStatus: "active",
+    lastActiveAt: new Date(),
   });
 
   audit({
     userId: newUser._id,
     action: "SIGNUP",
+    category: "auth",
+    purposeId: "account",
+    lawfulBasis: "consent",
     ip: req.ip,
     userAgent: req.headers["user-agent"],
     status: "SUCCESS",
   });
+
+  // ---- DPDP s. 6(10): persist the provable consent artefact(s) BEFORE we
+  // rely on them. Required purposes always recorded; optional only if opted in.
+  await recordSignupConsents({
+    userId: newUser._id,
+    optionalGranted: Array.isArray(optionalConsent) ? optionalConsent : [],
+    req,
+    language: language || "en",
+  });
+
+  // ---- DPDP s. 9: record verifiable guardian consent for a child.
+  if (child) {
+    await recordGuardianConsent({
+      childUserId: newUser._id,
+      relationship: guardian.relationship || "parent",
+      guardianName: guardian.name,
+      guardianEmail: guardian.email,
+      guardianPhone: guardian.phone,
+      verificationMethod: guardian.verificationMethod || "voluntarily_provided_identity",
+      verifier: "signup-self-attested-with-due-diligence",
+    });
+  }
 
   // DO NOT AUTO-LOGIN until email is verified
   authEmitter.emit("userRegistered", {
@@ -329,6 +412,12 @@ const verify2faToken = requestHandler(async (req, res) => {
     throw new ApiError(400, "2FA is not configured for this account");
   }
 
+  // Per-account lockout: the IP limiter alone is bypassable across many IPs, so
+  // a stolen password + PENDING_2FA session must not allow unbounded guessing.
+  if (user.twofaLockUntil && user.twofaLockUntil > new Date()) {
+    throw new ApiError(429, "Too many invalid 2FA attempts. Please try again later.");
+  }
+
   // 3. Verify OTP or Backup Code
   let is2faValid = speakeasy.totp.verify({
     secret: user.twofaCode,
@@ -349,6 +438,16 @@ const verify2faToken = requestHandler(async (req, res) => {
   }
 
   if (!is2faValid) {
+    // Exponential lockout after 5 failures (15 min, doubling — mirrors login).
+    user.failed2faAttempts = (user.failed2faAttempts || 0) + 1;
+    if (user.failed2faAttempts >= 5) {
+      const priorLocks =
+        user.twofaLockUntil && user.twofaLockUntil < new Date()
+          ? Math.min(24, user.failed2faAttempts / 5)
+          : 1;
+      user.twofaLockUntil = new Date(Date.now() + 15 * priorLocks * 60 * 1000);
+    }
+    await user.save({ validateBeforeSave: false });
     audit({
       userId: user._id,
       action: "2FA_VERIFY",
@@ -358,6 +457,11 @@ const verify2faToken = requestHandler(async (req, res) => {
     });
     throw new ApiError(401, "Invalid 2FA code");
   }
+
+  // Success: reset the counter/lock.
+  user.failed2faAttempts = 0;
+  user.twofaLockUntil = null;
+  await user.save({ validateBeforeSave: false });
 
   audit({
     userId: user._id,
@@ -389,6 +493,9 @@ const logoutUser = requestHandler(async (req, res) => {
     await Session.findByIdAndUpdate(sessionId, { revoked: true });
   }
 
+  // The session cookie is being cleared, so the NEW CSRF token must bind to
+  // the post-logout key (device_id/anon), not the now-revoked session id.
+  delete req.cookies.session_id;
   const csrfToken = rotateCsrfToken(req, res);
 
   return res
@@ -505,14 +612,16 @@ const generate2faSecret = requestHandler(async (req, res) => {
 
   const qr = await QRCode.toDataURL(secret.otpauth_url);
 
-  // Issue 40: preserve any unused backup codes instead of replacing the lot.
+  // Keep unused existing codes but CAP the list so repeated calls cannot grow
+  // the document without bound (the old code appended 10 every call forever).
+  const MAX_BACKUP_CODES = 20;
   const newBackupCodes = Array.from({ length: 10 }, () =>
-    crypto.randomBytes(4).toString("hex")
+    crypto.randomBytes(8).toString("hex")
   );
   foundUser.backupCodes = [
     ...(foundUser.backupCodes || []),
     ...newBackupCodes,
-  ];
+  ].slice(-MAX_BACKUP_CODES);
   await foundUser.save({ validateBeforeSave: false });
 
   return res.status(200).json(
@@ -583,6 +692,15 @@ const changePassword = requestHandler(async (req, res) => {
 
   foundUser.password = newPassword;
   await foundUser.save();
+
+  // Revoke every OTHER active session: a credential change must invalidate
+  // sessions established with the old password (matches resetPassword). Keep
+  // the caller's current session so they are not logged out of this device.
+  const currentSessionId = req.cookies.session_id;
+  await Session.updateMany(
+    { user_id: foundUser._id, revoked: false, _id: { $ne: currentSessionId } },
+    { revoked: true }
+  );
 
   audit({
     userId: foundUser._id,

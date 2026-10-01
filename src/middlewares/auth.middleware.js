@@ -3,7 +3,7 @@ import requestHandler from "../utility/requestHandeller.js";
 import ApiError from "../utility/ApiError.js";
 import Session from "../models/session.model.js";
 import User from "../models/user.model.js";
-import { isProd } from "./csrf.middleware.js";
+import { isProd, rotateCsrfToken } from "./csrf.middleware.js";
 
 // ⏳ SECURITY POLICIES
 const IDLE_NORMAL = process.env.IDLE_NORMAL
@@ -85,6 +85,10 @@ const authMiddleware = (roles = []) =>
         ua_hash: uaHash,
         device_id: deviceId,
         remember: session.remember,
+        // Carry the display metadata across the rotation; otherwise every
+        // rotated session shows "Unknown Browser"/"Unknown OS".
+        browser: session.browser,
+        os: session.os,
         last_seen: new Date(),
         ip: req.ip,
       });
@@ -104,6 +108,11 @@ const authMiddleware = (roles = []) =>
 
       // Update req for phantom token
       req.sessionId = newSessionId;
+      // The CSRF token is bound to the session id; rotating the session without
+      // rotating the token would break every later write. Reflect the new id on
+      // the request AND mint a fresh token bound to it (same response).
+      req.cookies.session_id = newSessionId;
+      rotateCsrfToken(req, res);
     } else {
       // Just Heartbeat
       await Session.findByIdAndUpdate(sessionId, { last_seen: new Date() });
@@ -120,8 +129,70 @@ const authMiddleware = (roles = []) =>
       }
     }
 
+    // s. 14: once a nominee claim is approved (death/incapacity), the Data
+    // Principal's own logins are blocked — only the nominee may act. Admins
+    // (role-gated routes) still pass so they can service the account.
+    if (user.accountLockedForNominee && user.role !== "admin") {
+      throw new ApiError(
+        403,
+        "This account is being serviced by a nominated person (s. 14). Please contact our Data Protection Officer."
+      );
+    }
+
+    // s. 8(7): once consent withdrawal has scheduled erasure, stop processing
+    // immediately — don't let the user keep using an account that is pending
+    // deletion (erasure itself runs on the retention pass).
+    if (user.accountStatus === "erasure_pending" && user.role !== "admin") {
+      throw new ApiError(
+        403,
+        "This account is scheduled for erasure. Processing has stopped."
+      );
+    }
+
+    // DPDP s. 8(8) / Rule 8(1): track the last time the Data Principal
+    // approached us so the inactivity erasure clock is accurate. Fire-and-
+    // forget; never block the request on this write.
+    User.updateOne({ _id: user._id }, { $set: { lastActiveAt: new Date() } }).catch(
+      () => {}
+    );
+
     req.user = user;
     next();
+  });
+
+/**
+ * OPTIONAL authentication. Attaches `req.user` when a valid session exists,
+ * but NEVER rejects an unauthenticated request — used by public endpoints that
+ * behave differently for a signed-in Data Principal (e.g. cookie consent,
+ * which must be scoped to the account once signed in). Invalid/expired
+ * sessions are treated as anonymous (no error), so a stale cookie can't block
+ * a public action.
+ */
+export const optionalAuthMiddleware = () =>
+  requestHandler(async (req, _res, next) => {
+    const sessionId = req.cookies?.session_id;
+    if (!sessionId) return next();
+
+    // Apply the SAME device/UA binding as authMiddleware: a stolen session_id
+    // cookie alone must not be accepted as an authenticated identity on the
+    // cookie-consent endpoints (which write account-scoped records). A mismatch
+    // is treated as anonymous, never as an error.
+    const deviceId = req.cookies?.device_id;
+    const uaHash = crypto
+      .createHash("sha256")
+      .update(req.headers["user-agent"] || "")
+      .digest("hex");
+
+    try {
+      const session = await Session.findById(sessionId);
+      if (!session || session.revoked || session.status !== "ACTIVE") return next();
+      if (session.device_id !== deviceId || session.ua_hash !== uaHash) return next();
+      const user = await User.findById(session.user_id).select("-password -twofaCode -backupCodes");
+      if (user) req.user = user;
+    } catch {
+      // Treat any lookup failure as anonymous rather than failing the request.
+    }
+    return next();
   });
 
 export default authMiddleware;

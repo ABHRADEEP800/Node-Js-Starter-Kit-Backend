@@ -4,10 +4,14 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import userRouter from "./routers/user.route.js";
 import adminRouter from "./routers/admin.route.js";
+import privacyRouter from "./routers/privacy.route.js";
+import adminPrivacyRouter from "./routers/admin.privacy.route.js";
+import cookieRouter from "./routers/cookie.route.js";
 import helmet from "helmet";
 import compression from "compression";
 import mongoSanitize from "express-mongo-sanitize";
 import rateLimit from "express-rate-limit";
+import { baseRateLimitOptions } from "./config/rateLimit.config.js";
 import errorHandler from "./middlewares/error.middleware.js";
 import ensureDeviceId from "./middlewares/device.middleware.js";
 import {
@@ -83,7 +87,7 @@ app.use(
 );
 app.use(compression());
 
-const globalLimiter = rateLimit({
+const globalLimiter = rateLimit({ ...baseRateLimitOptions,
   windowMs: 15 * 60 * 1000,
   max: 100,
   message: "Too many requests from this IP, please try again after 15 minutes",
@@ -93,10 +97,22 @@ app.use(globalLimiter);
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 
-// Sanitize data against NoSQL Query Injection (Safe execution avoiding req.query assignment crash)
+// Sanitize data against NoSQL Query Injection.
+// Express 5 defines `req.query` as a getter that re-parses the query string on
+// every access, so `mongoSanitize.sanitize(req.query)` would mutate a throwaway
+// object. We sanitize the parsed query and shadow the getter with a stable,
+// sanitized data property so controllers see the sanitized values.
 app.use((req, res, next) => {
   if (req.body) mongoSanitize.sanitize(req.body);
-  if (req.query) mongoSanitize.sanitize(req.query);
+  if (req.query) {
+    const sanitizedQuery = mongoSanitize.sanitize({ ...req.query });
+    Object.defineProperty(req, "query", {
+      value: sanitizedQuery,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  }
   if (req.params) mongoSanitize.sanitize(req.params);
   next();
 });
@@ -131,6 +147,12 @@ app.get("/health", (req, res) => {
 });
 //routers
 app.use("/api/v1/user", userRouter);
+// DPDP: Data Principal rights, notice, consent (ss. 5–14, Rules 3/14).
+// Cookie/tracker consent is mounted first as a public surface (Domain 8).
+app.use("/api/v1/privacy/cookies", cookieRouter);
+app.use("/api/v1/privacy", privacyRouter);
+// DPDP: admin control plane — breach, retention, transfers, DPIA (Rules 7/8/13/15).
+app.use("/api/v1/admin/privacy", adminPrivacyRouter);
 app.use("/api/v1/admin", adminRouter);
 
 // Global Error Handler

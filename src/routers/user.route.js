@@ -23,6 +23,7 @@ import {
 } from "../controllers/user.controller.js";
 import authMiddleware from "../middlewares/auth.middleware.js";
 import rateLimit from "express-rate-limit";
+import { baseRateLimitOptions } from "../config/rateLimit.config.js";
 import validate from "../middlewares/validate.middleware.js";
 import {
   signupSchema,
@@ -53,10 +54,10 @@ const userRouter = express.Router();
 // exists before CSRF tokens are minted.
 
 // Rate Limits
-const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
-const twofaLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
-const passwordResetLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 5 });
-const checkLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 60 });
+const loginLimiter = rateLimit({ ...baseRateLimitOptions, windowMs: 15 * 60 * 1000, max: 10 });
+const twofaLimiter = rateLimit({ ...baseRateLimitOptions, windowMs: 15 * 60 * 1000, max: 10 });
+const passwordResetLimiter = rateLimit({ ...baseRateLimitOptions, windowMs: 15 * 60 * 1000, max: 5 });
+const checkLimiter = rateLimit({ ...baseRateLimitOptions, windowMs: 1 * 60 * 1000, max: 60 });
 
 // Auth Routes
 userRouter.route("/check-username").get(checkLimiter, checkUsername);
@@ -105,7 +106,7 @@ userRouter
 // 🔑 NEW: PASSKEY (WEBAUTHN) ROUTES
 // Registration & management require an authenticated session; login is public
 // but rate-limited (generating options is where a bot would probe for users).
-const passkeyLoginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 });
+const passkeyLoginLimiter = rateLimit({ ...baseRateLimitOptions, windowMs: 15 * 60 * 1000, max: 20 });
 
 userRouter.route("/passkey/list").get(authMiddleware(), listPasskeys);
 userRouter

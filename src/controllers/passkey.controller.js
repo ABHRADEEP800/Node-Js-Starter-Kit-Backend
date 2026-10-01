@@ -95,6 +95,10 @@ const createSession = async (
   } else {
     res.cookie("session_id", sessionId, cookieOptions);
   }
+
+  // Reflect the new session id on the request so a CSRF token minted later in
+  // the same handler binds to THIS session (see user.controller.createSession).
+  req.cookies.session_id = sessionId;
 };
 
 // ==========================================

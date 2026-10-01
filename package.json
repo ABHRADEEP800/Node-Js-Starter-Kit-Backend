@@ -12,7 +12,9 @@
     "dev:real": "nodemon -r dotenv/config src/server.js",
     "format": "prettier --write \"src/**/*.js\"",
     "start": "node -r dotenv/config src/server.js",
-    "lint": "eslint \"src/**/*.js\""
+    "lint": "eslint \"src/**/*.js\"",
+    "retention": "node -r dotenv/config scripts/retention.js",
+    "retention:dry": "node -r dotenv/config scripts/retention.js --dry-run"
   },
   "author": "Tanmoy",
   "license": "ISC",

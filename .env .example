@@ -1,39 +1,153 @@
+# ===========================================================
+# Starter Kit — backend (Express, JS) environment
+# Copy this file to `.env` and fill in the values.
+# ===========================================================
+
+# Port the API listens on. Any free port; must match the frontend's
+# VITE_API_HOST_URL. Default 5000.
 NODE_SERVER_PORT=5000
+
+# Runtime environment: "development" | "production".
+# In production, cookies are secure-only and error stacks are hidden.
 NODE_ENVIRONMENT=development
 
+# Your project name — shown in the UI and in emails.
 PROJECT_NAME=Starter Kit
 
-# for multiple origins use comma separated values ex: http://localhost:3000,http://localhost:4000
+# Comma-separated list of allowed browser origins (CORS).
+# Enter the EXACT origin(s) of your frontend, e.g. your Vite dev server and
+# preview server. Include the scheme and port; no trailing slash.
 ALLOWED_ORIGINS=http://localhost:5173,http://localhost:4173
 
+# Number of proxy hops in front of the app (for req.ip / rate limiting).
+# Leave blank or 1 for a single reverse proxy (ALB/CDN). Set to the exact
+# hop count if you have a chain of proxies.
+TRUST_PROXY_COUNT=1
 
+# ---- Email (nodemailer) ----
+# The transactional email used for verification, password reset and breach
+# notices. Leave SMTP_USER/SMTP_PASS blank to use a local Ethereal test inbox.
 SMTP_HOST=smtp.google.com
 SMTP_PORT=587
 SMTP_SECURE=false
-SMTP_USER=9hih
-SMTP_PASS=xsmtpsib-6d8c18a706d63b1f0b7
-SMTP_FORM_EMAIL=no-reply@abhradeep.com
+SMTP_USER=
+SMTP_PASS=
+SMTP_FORM_EMAIL=no-reply@yourcompany.example
 
+# ---- Database & cache ----
+# MongoDB connection string. Generate/obtain it from your MongoDB provider
+# (Atlas "Connect" button) or a local `mongod`. Rotate the DB password before
+# deploying to production.
+MONGODB_URL=mongodb://127.0.0.1:27017/starterkit
+# Redis connection string (optional; used as a cache). From your Redis
+# provider or a local server.
+REDIS_URL=redis://127.0.0.1:6379
 
-# Google reCAPTCHA Configs
-RECAPTCHA_SECRET_KEY=6Ld
+# ---- Session timing (milliseconds) ----
+# Idle timeout for normal sessions (default 10 minutes).
+IDLE_NORMAL=600000
+# Idle timeout when "remember me" is ticked (default 7 days).
+IDLE_REMEMBER=604800000
+# How often the session id is rotated (anti-hijack). Default 15 minutes.
+ROTATION_WINDOW=900000
 
+# ---- Secrets ----
+# ACCESS_TOKEN_SECRET: also signs CSRF tokens. WHAT TO PUT: a long random
+# secret, unique per environment. Generate with:
+#   openssl rand -base64 48
+ACCESS_TOKEN_SECRET=
 
-#Redis Configs
-REDIS_URL=redis:\
-MONGODB_URL=mongodb:
+# PASSWORD_PEPPER: server-side pepper mixed into password hashing via
+# HMAC-SHA256 (bcrypt supplies the per-user salt; the pepper is never stored).
+# WHAT TO PUT: a long random secret, unique per environment. Generate with:
+#   openssl rand -base64 48
+# NOTE: rotating this invalidates all existing password hashes — plan a
+# migration (users re-hash on next successful login).
+PASSWORD_PEPPER=
 
-#config for access
-IDLE_NORMAL = 10 * 60 * 1000; // 10 Minutes
-IDLE_REMEMBER = 7 * 24 * 60 * 60 * 1000; // 7 Days
-ROTATION_WINDOW = 15 * 60 * 1000; // 15 Minutes
-
-# Pepper for password hashing (keep secret, same value across app restarts)
-PASSWORD_PEPPER=replace-with-a-long-random-secret
-
-# Passkey (WebAuthn) config
-# PASSKEY_ORIGIN defaults to http://localhost:5173. Set to your HTTPS origin in production.
+# ---- Passkey (WebAuthn) ----
+# PASSKEY_ORIGIN must be the exact origin the browser loads the app from
+# (scheme + host + port). Set to your HTTPS origin in production.
 PASSKEY_ORIGIN=http://localhost:5173
-# PASSKEY_RP_ID defaults to the PASSKEY_ORIGIN hostname. Set explicitly if they differ.
-# PASSKEY_RP_ID=example.com
-# PASSKEY_RP_NAME=Starter Kit
+# PASSKEY_RP_ID defaults to the PASSKEY_ORIGIN hostname. Set explicitly if
+# they differ (e.g. origin https://app.example.com → rpID example.com).
+PASSKEY_RP_ID=
+PASSKEY_RP_NAME=Starter Kit
+
+# ---- Google reCAPTCHA (a functional/security tracker — see Domain 8) ----
+# WHY: reCAPTCHA blocks bots on signup/login/reset; it sets Google cookies and
+#      sends a risk score. Under DPDP there is NO "strictly necessary"
+#      exemption, so it is registered as a `captcha` tracker on the s. 7(a)
+#      basis and itemised in the cookie banner BEFORE it loads; if a user
+#      rejects it, the app re-asks with a clear explanation.
+# HOW TO GET THE KEYS:
+#   1. Go to https://www.google.com/recaptcha/admin/create
+#   2. Choose reCAPTCHA v3, add the domains you serve from, submit.
+#   3. Copy the SITE key  -> frontend VITE_RECAPTCHA_SITE_KEY
+#      Copy the SECRET key -> RECAPTCHA_SECRET_KEY (below, server-side only).
+#   4. Rotate by creating a new key and updating both sides together.
+
+# TROUBLESHOOTING — "api.js?render=KEY → 400 Bad Request":
+#   Google returns 400 when the SITE key (frontend) is missing, mistyped, or
+#   not registered for the current domain. Fixes: add every hostname (incl.
+#   `localhost`) to the key in the reCAPTCHA console; use a v3 SITE key; make
+#   sure this SECRET and the frontend SITE key are from the SAME registration.
+
+RECAPTCHA_SECRET_KEY=
+
+# reCAPTCHA verify timeout in ms (fail fast if Google is slow).
+RECAPTCHA_TIMEOUT_MS=4000
+
+# ===========================================================
+# DPDP Act 2023 + Rules 2025
+# ===========================================================
+# The four DPDP_* secrets are HMAC/AES keys. Never commit real values; keep
+# them in a secret manager (AWS/GCP Secret Manager, Vault, Doppler) and inject
+# at deploy time. Generate a strong random secret (32+ bytes) with ANY of:
+#   openssl rand -base64 48
+#   node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"
+#   python3 -c "import secrets;print(secrets.token_urlsafe(48))"
+
+# Master key for DPDP field encryption (AES-256-GCM) + virtual tokens.
+# WHAT TO PUT: a 32+ byte random secret from the command above.
+# WHY: encrypts sensitive fields at rest (Rule 6(a)/s. 8(5)).
+# NOTE: rotating this makes previously-encrypted fields unreadable — see
+#       DPDP_FIELD_KEY_ID and keep the old key registered during migration.
+DPDP_FIELD_KEY=
+
+# Key id for the CURRENT DPDP_FIELD_KEY — a label, not a secret (default "v1").
+# WHAT TO PUT: "v1" initially; bump to "v2", "v3"… when you rotate the key so
+# old rows stay readable during migration. Safe to commit.
+DPDP_FIELD_KEY_ID=v1
+
+# Secret for pseudonymous tokens (HMAC): hashed IPs, subject/actor tokens.
+# WHAT TO PUT: another independent random secret (same command as above).
+# WHY: Rule 6(a) virtual tokens + s. 6(10) consent evidence.
+# NOTE: if blank it falls back to ACCESS_TOKEN_SECRET (fine for dev, not for
+#       production — use a separate key).
+DPDP_TOKEN_SECRET=
+
+# Data Protection Officer contact — shown in the notice and every rights
+# response (s. 5(iv), s. 8(9), Rule 9). WHAT TO PUT: a real named officer/team
+# and a monitored inbox (business contact details, not secrets).
+DPO_NAME=
+DPO_EMAIL=
+DPO_PHONE=
+DPO_ADDRESS=
+
+# Link to the Data Protection Board of India complaint route (s. 13).
+# WHAT TO PUT: leave the default; update if the Board publishes a portal URL.
+DPB_COMPLAINT_URL=https://www.meity.gov.in/data-protection-framework
+
+# Third Schedule / Rule 8(1) inactivity erasure period, in DAYS.
+# WHAT TO PUT: 1095 = 3 years (the Third Schedule figure for qualifying
+# e-commerce/gaming/social-media intermediaries); lower it for a stricter
+# policy. The 48-hour pre-erasure warning is automatic.
+DPDP_INACTIVITY_DAYS=1095
+
+# Optional in-process retention scheduler interval, in MILLISECONDS.
+# WHAT TO PUT: 0 (OFF, recommended) and use the cron script instead:
+#   npm run retention        # one pass
+#   npm run retention:dry    # report only
+# Set a positive value only for a SINGLE-instance deployment.
+DPDP_RETENTION_INTERVAL_MS=0

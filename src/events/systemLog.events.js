@@ -15,9 +15,12 @@ const LOG_FILE = path.join(LOG_DIR, "system-log.csv");
 class SystemLogEmitter extends EventEmitter {}
 const systemLogEmitter = new SystemLogEmitter();
 
-/** Escape a value for safe CSV output (quotes + commas + newlines). */
+/** Escape a value for safe CSV output (formula injection + quotes/commas). */
 const csvEscape = (value) => {
-  const str = value === undefined || value === null ? "" : String(value);
+  let str = value === undefined || value === null ? "" : String(value);
+  // Neutralise spreadsheet formula injection: a cell beginning with = + - @
+  // (or a leading tab/CR) can execute when the log is opened in Excel/Sheets.
+  if (/^[=+\-@\t\r]/.test(str)) str = "'" + str;
   return /[",\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
 };
 

@@ -16,6 +16,12 @@ export const userOutputSchema = z
     email: z.string().email(),
     role: z.enum(["user", "admin"]),
     createdAt: z.any().optional(),
+    // DPDP: age/guardian status so the client can gate features and render the
+    // Privacy Center. dateOfBirth and all secrets are intentionally excluded.
+    isChild: z.boolean().optional(),
+    guardianVerified: z.boolean().optional(),
+    telemetryDisabled: z.boolean().optional(),
+    accountStatus: z.enum(["active", "erasure_pending", "erased"]).optional(),
   })
   .strip();
 

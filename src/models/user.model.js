@@ -95,6 +95,17 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    // Issue: per-user 2FA attempt counter / lockout. The IP-based twofaLimiter
+    // alone can be bypassed across many IPs, so a stolen password + PENDING_2FA
+    // session must not permit unbounded TOTP guessing.
+    failed2faAttempts: {
+      type: Number,
+      default: 0,
+    },
+    twofaLockUntil: {
+      type: Date,
+      default: null,
+    },
     isEmailVerified: {
       type: Boolean,
       default: false,
@@ -116,6 +127,107 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    // ==========================================
+    // 🇮🇳 DPDP COMPLIANCE FIELDS
+    // ==========================================
+    // Age gate (s. 9, s. 2(f)). `dateOfBirth` is required at signup and NEVER
+    // exposed by the output DTO. A child is anyone under 18; `isChild` is the
+    // coarse flag used by access-control checks. If age is unknown we treat
+    // the user as a child until verified otherwise.
+    dateOfBirth: {
+      type: Date,
+      default: null,
+    },
+    isChild: {
+      type: Boolean,
+      default: true, // deny-by-default: unknown age ⇒ treat as child
+    },
+    // Verifiable parental / guardian consent (s. 9, Rule 10/11).
+    guardianVerified: {
+      type: Boolean,
+      default: false,
+    },
+    guardianConsentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "GuardianConsent",
+      default: null,
+    },
+    // Children's data: telemetry, tracking and targeted ads are disabled
+    // (s. 9(3)). Adults default to false (telemetry off unless they opt in).
+    telemetryDisabled: {
+      type: Boolean,
+      default: true,
+    },
+    // Whether the Data Principal has affirmed the s. 15 duties in the UI.
+    dutiesAcknowledgedAt: {
+      type: Date,
+      default: null,
+    },
+    // Registered lawful purpose for the account record (s. 4(1)).
+    purposeId: {
+      type: String,
+      default: "account",
+    },
+    lawfulBasis: {
+      type: String,
+      default: "consent",
+    },
+
+    // ---- Retention / erasure lifecycle (s. 8(7)/(8), Rule 8) ----
+    lastActiveAt: { type: Date, default: Date.now },
+    accountStatus: {
+      type: String,
+      enum: ["active", "erasure_pending", "erased"],
+      default: "active",
+    },
+    erasureDueAt: { type: Date, default: null },
+    erasureWarnedAt: { type: Date, default: null },
+    deletionRequestedAt: { type: Date, default: null },
+    legalHold: { type: Boolean, default: false },
+    legalHoldCitation: { type: String, default: null },
+    // Set when the Third Schedule inactivity trim has already run, so an
+    // inactive account is not re-trimmed on every retention pass. Cleared
+    // implicitly by a fresh sign-in advancing `lastActiveAt`.
+    retentionTrimmedAt: { type: Date, default: null },
+
+    // s. 14 — nominees who may exercise the Data Principal's rights on death
+    // or incapacity. Name/contact are ENCRYPTED at rest (Rule 6(a)); the
+    // relationship and status are not secret.
+    nominees: {
+      type: [
+        {
+          name: String, // encrypted (v1 envelope)
+          relationship: String,
+          contact: String, // encrypted email/phone
+          // Optional share of the estate's data claim (e.g. "50%"); free text.
+          share: { type: String, default: null },
+          // Lifecycle of this nomination.
+          status: {
+            type: String,
+            enum: ["active", "revoked", "claimed"],
+            default: "active",
+          },
+          addedAt: { type: Date, default: Date.now },
+          revokedAt: { type: Date, default: null },
+        },
+      ],
+      default: [],
+    },
+    // Set when a nominee claim is substantiated (death/incapacity proven): the
+    // account is locked and the nominee may exercise the DP's rights (s. 14).
+    nomineeClaim: {
+      status: {
+        type: String,
+        enum: ["none", "pending", "approved", "rejected"],
+        default: "none",
+      },
+      claimId: { type: mongoose.Schema.Types.ObjectId, ref: "NomineeClaim", default: null },
+      approvedAt: { type: Date, default: null },
+    },
+    // When the DP is deceased/incapacitated and a claim is approved, no further
+    // processing happens except servicing the nominee.
+    accountLockedForNominee: { type: Boolean, default: false },
   },
   {
     timestamps: true,
